@@ -1,4 +1,3 @@
-import os
 from typing import List, Literal, Optional, Dict, Any
 
 from fastapi import FastAPI, Header, HTTPException
