@@ -133,8 +133,8 @@ async def chat_endpoint(
         stream=True,
     )
 
-    async def token_stream():
-        async for chunk in stream:
+    def token_stream():
+        for chunk in stream:
             delta = chunk.choices[0].delta
             if delta.content:
                 yield delta.content
