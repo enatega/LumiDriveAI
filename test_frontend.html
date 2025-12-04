@@ -1,0 +1,1668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LumiDrive Voice Assistant Test</title>
+    <!-- Google Maps API - Replace YOUR_GOOGLE_API_KEY with your actual key -->
+    <!-- For testing, you can use a placeholder or add an input field for the key -->
+    <script>
+        // Google Maps API key
+        let GOOGLE_MAPS_API_KEY = '';
+        let mapsApiLoaded = false;
+        
+        // Function to load Google Maps API
+        function loadGoogleMapsWithKey(apiKey) {
+            if (!apiKey || apiKey.trim() === '') {
+                console.warn('Google Maps API key not provided. Map features will be disabled.');
+                mapsApiLoaded = false;
+                return;
+            }
+            
+            // Don't reload if already loaded with the same key
+            if (mapsApiLoaded && GOOGLE_MAPS_API_KEY === apiKey.trim()) {
+                return;
+            }
+            
+            // Remove existing script if any
+            const existingScript = document.querySelector('script[src*="maps.googleapis.com"]');
+            if (existingScript) {
+                existingScript.remove();
+                mapsApiLoaded = false;
+            }
+            
+            GOOGLE_MAPS_API_KEY = apiKey.trim();
+            const script = document.createElement('script');
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=places,geometry&callback=initMap`;
+            script.async = true;
+            script.defer = true;
+            script.onerror = () => {
+                showStatus('Failed to load Google Maps API. Please check your API key.', 'error');
+                mapsApiLoaded = false;
+                const statusSpan = document.getElementById('mapsKeyStatus');
+                if (statusSpan) {
+                    statusSpan.textContent = '✗ Failed to load Google Maps';
+                    statusSpan.style.color = '#c33';
+                }
+            };
+            document.head.appendChild(script);
+        }
+        
+        // Initialize map callback
+        function initMap() {
+            mapsApiLoaded = true;
+            console.log('Google Maps API loaded successfully');
+            // Only show success message if it was just loaded (not on every page load)
+            const keyInput = document.getElementById('googleMapsKey');
+            if (keyInput && !keyInput.readOnly) {
+                showStatus('Google Maps loaded! You can now use map selection.', 'success');
+                setTimeout(hideStatus, 3000);
+            }
+        }
+        
+        // Fetch Google Maps API key from server on page load
+        async function fetchGoogleMapsKeyFromServer() {
+            const apiUrl = document.getElementById('apiUrl').value.trim() || 'http://localhost:8000';
+            const statusSpan = document.getElementById('mapsKeyStatus');
+            const fallbackSpan = document.getElementById('mapsKeyFallback');
+            
+            try {
+                const response = await fetch(`${apiUrl}/config`);
+                if (response.ok) {
+                    const config = await response.json();
+                    if (config.google_maps_api_key) {
+                        GOOGLE_MAPS_API_KEY = config.google_maps_api_key;
+                        const keyInput = document.getElementById('googleMapsKey');
+                        if (keyInput) {
+                            // Show masked key in input (for security)
+                            const maskedKey = config.google_maps_api_key.substring(0, 10) + '...' + config.google_maps_api_key.substring(config.google_maps_api_key.length - 4);
+                            keyInput.value = maskedKey;
+                            keyInput.placeholder = 'API key loaded from server';
+                            keyInput.readOnly = true;
+                            keyInput.style.background = '#f0f0f0';
+                        }
+                        statusSpan.textContent = '✓ API key loaded from server';
+                        statusSpan.style.color = '#2e7d32';
+                        fallbackSpan.style.display = 'none';
+                        loadGoogleMapsWithKey(config.google_maps_api_key);
+                        return;
+                    }
+                }
+            } catch (error) {
+                console.log('Could not fetch config from server:', error);
+            }
+            
+            // Fallback: Check localStorage or show manual input
+            statusSpan.textContent = '';
+            fallbackSpan.style.display = 'block';
+            const storedKey = localStorage.getItem('googleMapsApiKey');
+            const keyInput = document.getElementById('googleMapsKey');
+            
+            if (storedKey && keyInput) {
+                keyInput.value = storedKey;
+                keyInput.placeholder = 'Enter your Google Maps API key...';
+                loadGoogleMapsWithKey(storedKey);
+            } else if (keyInput && keyInput.value && keyInput.value.trim().length > 20 && !keyInput.value.includes('...')) {
+                // If there's already a key in the input (user entered it before page fully loaded)
+                const existingKey = keyInput.value.trim();
+                loadGoogleMapsWithKey(existingKey);
+            }
+        }
+        
+        // Handle map button click - ensures API key is loaded
+        function handleMapButtonClick() {
+            const keyInput = document.getElementById('googleMapsKey');
+            let apiKey = '';
+            
+            // Get API key from input field
+            if (keyInput && keyInput.value) {
+                const inputValue = keyInput.value.trim();
+                // Check if it's a masked key (contains "...")
+                if (inputValue.includes('...')) {
+                    // Use stored key
+                    apiKey = GOOGLE_MAPS_API_KEY || localStorage.getItem('googleMapsApiKey') || '';
+                } else if (inputValue.length > 20) {
+                    // Valid key format
+                    apiKey = inputValue;
+                }
+            }
+            
+            // Fallback to stored key
+            if (!apiKey) {
+                apiKey = GOOGLE_MAPS_API_KEY || localStorage.getItem('googleMapsApiKey') || '';
+            }
+            
+            if (!apiKey || apiKey.length < 20) {
+                showStatus('Please enter a valid Google Maps API key first.', 'error');
+                if (keyInput) {
+                    keyInput.focus();
+                    keyInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+                return;
+            }
+            
+            // If API not loaded or key changed, load it
+            if (!mapsApiLoaded || GOOGLE_MAPS_API_KEY !== apiKey) {
+                console.log('Loading Google Maps API with key:', apiKey.substring(0, 10) + '...');
+                loadGoogleMapsWithKey(apiKey);
+                showStatus('Loading Google Maps... Please wait a moment.', 'info');
+                
+                // Wait for API to load, then show modal
+                let attempts = 0;
+                const maxAttempts = 20; // 10 seconds max
+                const checkInterval = setInterval(() => {
+                    attempts++;
+                    if (typeof google !== 'undefined' && google.maps) {
+                        clearInterval(checkInterval);
+                        hideStatus();
+                        showMapModal();
+                    } else if (attempts >= maxAttempts) {
+                        clearInterval(checkInterval);
+                        showStatus('Google Maps failed to load. Please check your API key and try again.', 'error');
+                    }
+                }, 500);
+            } else {
+                // API already loaded, show modal immediately
+                showMapModal();
+            }
+        }
+        
+        // Check for existing API key in input field on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            setTimeout(() => {
+                const keyInput = document.getElementById('googleMapsKey');
+                if (keyInput && keyInput.value && keyInput.value.trim().length > 20 && !keyInput.value.includes('...') && !mapsApiLoaded) {
+                    const existingKey = keyInput.value.trim();
+                    console.log('Found existing API key in input, loading...');
+                    loadGoogleMapsWithKey(existingKey);
+                }
+            }, 1000);
+        });
+        
+        // Load config when page loads
+        window.addEventListener('DOMContentLoaded', () => {
+            // Wait a bit for API URL to be set, then fetch config
+            setTimeout(fetchGoogleMapsKeyFromServer, 500);
+        });
+        
+            // Also fetch when API URL changes
+        document.addEventListener('DOMContentLoaded', () => {
+            const apiUrlInput = document.getElementById('apiUrl');
+            if (apiUrlInput) {
+                apiUrlInput.addEventListener('change', () => {
+                    setTimeout(fetchGoogleMapsKeyFromServer, 100);
+                });
+            }
+            
+            // Handle manual API key entry
+            const keyInput = document.getElementById('googleMapsKey');
+            if (keyInput) {
+                // Save to localStorage when manually entered
+                keyInput.addEventListener('change', function() {
+                    const value = this.value.trim();
+                    if (value && !this.readOnly && value.length > 20) {
+                        localStorage.setItem('googleMapsApiKey', value);
+                        // If user manually enters a key, load it immediately
+                        if (value && value !== GOOGLE_MAPS_API_KEY) {
+                            console.log('Loading Google Maps API with manually entered key...');
+                            loadGoogleMapsWithKey(value);
+                        }
+                    }
+                });
+                
+                // Also handle input event for real-time updates (when user stops typing)
+                keyInput.addEventListener('input', function() {
+                    const value = this.value.trim();
+                    if (value && !this.readOnly && value.length > 20) {
+                        // User is typing a key, wait a bit then load it
+                        clearTimeout(window.keyInputTimeout);
+                        window.keyInputTimeout = setTimeout(() => {
+                            if (value && value !== GOOGLE_MAPS_API_KEY) {
+                                console.log('Auto-loading Google Maps API...');
+                                localStorage.setItem('googleMapsApiKey', value);
+                                loadGoogleMapsWithKey(value);
+                            }
+                        }, 1500); // Wait 1.5 seconds after user stops typing
+                    }
+                });
+                
+                // Check if there's already a key in the input field (user might have pasted it)
+                // This handles the case where the key is already there when page loads
+                setTimeout(() => {
+                    const existingValue = keyInput.value.trim();
+                    if (existingValue && existingValue.length > 20 && !existingValue.includes('...') && !mapsApiLoaded) {
+                        console.log('Found existing API key in input field, loading...');
+                        localStorage.setItem('googleMapsApiKey', existingValue);
+                        loadGoogleMapsWithKey(existingValue);
+                    }
+                }, 2000);
+            }
+        });
+    </script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 30px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+        .subtitle {
+            color: #666;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            flex: 1;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .record-btn {
+            background: #667eea;
+            color: white;
+        }
+        .record-btn:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        .record-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .record-btn.recording {
+            background: #e74c3c;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .clear-btn {
+            background: #95a5a6;
+            color: white;
+        }
+        .clear-btn:hover:not(:disabled) {
+            background: #7f8c8d;
+        }
+        .status {
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 14px;
+            display: none;
+        }
+        .status.error {
+            background: #fee;
+            color: #c33;
+            border: 1px solid #fcc;
+            display: block;
+        }
+        .status.info {
+            background: #e3f2fd;
+            color: #1976d2;
+            border: 1px solid #bbdefb;
+            display: block;
+        }
+        .status.success {
+            background: #e8f5e9;
+            color: #2e7d32;
+            border: 1px solid #c8e6c9;
+            display: block;
+        }
+        .transcript-box, .response-box {
+            background: #f8f9fa;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            min-height: 60px;
+        }
+        .transcript-box h3, .response-box h3 {
+            font-size: 12px;
+            color: #999;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            letter-spacing: 0.5px;
+        }
+        .transcript-box p, .response-box p {
+            color: #333;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .response-box p {
+            color: #667eea;
+            font-weight: 500;
+        }
+        .audio-player {
+            margin-top: 15px;
+            width: 100%;
+        }
+        .hidden {
+            display: none;
+        }
+        .session-info {
+            font-size: 12px;
+            color: #999;
+            text-align: center;
+            margin-top: 20px;
+        }
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .chat-input-group {
+            display: flex;
+            gap: 10px;
+        }
+        .chat-input-group input {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .chat-input-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .send-btn {
+            background: #667eea;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .send-btn:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-2px);
+        }
+        .send-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .chat-history {
+            background: #f8f9fa;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            max-height: 400px;
+            overflow-y: auto;
+            min-height: 200px;
+        }
+        .chat-message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 8px;
+        }
+        .chat-message.user {
+            background: #e3f2fd;
+            margin-left: 20%;
+        }
+        .chat-message.assistant {
+            background: #f3e5f5;
+            margin-right: 20%;
+        }
+        .chat-message .role {
+            font-size: 11px;
+            color: #999;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+        .chat-message .content {
+            color: #333;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .mode-toggle {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .mode-btn {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .mode-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        .mode-btn:hover {
+            border-color: #667eea;
+        }
+        .voice-section, .chat-section {
+            display: none;
+        }
+        .voice-section.active, .chat-section.active {
+            display: block;
+        }
+        /* Map Selection Modal */
+        .map-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .map-modal.active {
+            display: flex;
+        }
+        .map-container {
+            background: white;
+            border-radius: 20px;
+            padding: 20px;
+            max-width: 90%;
+            max-height: 90%;
+            width: 800px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .map-container h2 {
+            margin: 0;
+            color: #333;
+        }
+        .map-wrapper {
+            width: 100%;
+            height: 400px;
+            border-radius: 10px;
+            overflow: hidden;
+            border: 2px solid #e0e0e0;
+        }
+        #map {
+            width: 100%;
+            height: 100%;
+            min-height: 400px;
+            background: #e0e0e0;
+        }
+        .map-instructions {
+            background: #e3f2fd;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #1976d2;
+        }
+        .map-instructions strong {
+            display: block;
+            margin-bottom: 5px;
+        }
+        .search-inputs {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .search-input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .search-input-group label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #555;
+        }
+        .search-input-group input {
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            width: 100%;
+        }
+        .search-input-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .location-info {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        .location-card {
+            flex: 1;
+            min-width: 200px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 2px solid #e0e0e0;
+        }
+        .location-card.active {
+            border-color: #667eea;
+            background: #e3f2fd;
+        }
+        .location-card h4 {
+            margin: 0 0 8px 0;
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #666;
+        }
+        .location-card p {
+            margin: 0;
+            font-size: 14px;
+            color: #333;
+        }
+        .map-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        .map-btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .map-btn.primary {
+            background: #667eea;
+            color: white;
+        }
+        .map-btn.primary:hover:not(:disabled) {
+            background: #5568d3;
+        }
+        .map-btn.secondary {
+            background: #95a5a6;
+            color: white;
+        }
+        .map-btn.secondary:hover {
+            background: #7f8c8d;
+        }
+        .map-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>💬 LumiDrive Assistant</h1>
+        <p class="subtitle">Voice & Text Chat</p>
+
+        <div class="input-group">
+            <label for="token">JWT Token:</label>
+            <input type="text" id="token" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." 
+                   value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6ImViOTI1OTZiLTRlOWMtNGZjOC1iYWRlLTI5ZmRhYzM1Yjk5OSIsInRva2VuVmVyc2lvbiI6MCwiaWF0IjoxNzYyMjM2MzE0LCJleHAiOjE3NjQ4MjgzMTR9.XzdJG_QoXYlgox9KhW9nYx_klvuYdAiwWFWUKijHX3Y">
+        </div>
+
+        <div class="input-group">
+            <label for="apiUrl">API Base URL:</label>
+            <input type="text" id="apiUrl" placeholder="http://localhost:8000" value="http://localhost:8000">
+        </div>
+
+        <div class="input-group">
+            <label for="googleMapsKey">Google Maps API Key (for map selection):</label>
+            <input type="text" id="googleMapsKey" placeholder="Loading from server..." 
+                   onchange="loadGoogleMapsWithKey(this.value)">
+            <small style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
+                <span id="mapsKeyStatus">Loading...</span>
+                <span id="mapsKeyFallback" style="display: none;">
+                    Not found in server config. Enter manually or get one from <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a>
+                </span>
+            </small>
+        </div>
+
+        <div class="mode-toggle">
+            <button class="mode-btn active" data-mode="chat">💬 Text Chat</button>
+            <button class="mode-btn" data-mode="voice">🎤 Voice</button>
+        </div>
+
+        <div id="status" class="status"></div>
+
+        <!-- Chat Section -->
+        <div class="chat-section active">
+            <div class="chat-history" id="chatHistory">
+                <div class="chat-message assistant">
+                    <div class="role">Assistant</div>
+                    <div class="content">Hi! I'm LumiDrive. How can I help you book a ride today?</div>
+                </div>
+            </div>
+            <div class="chat-input-group">
+                <input type="text" id="chatInput" placeholder="Type your message here..." 
+                       onkeypress="if(event.key === 'Enter') sendTextMessage()">
+                <button id="sendBtn" class="send-btn" onclick="sendTextMessage()">Send</button>
+            </div>
+        </div>
+
+        <!-- Voice Section -->
+        <div class="voice-section">
+            <div class="button-group">
+                <button id="recordBtn" class="record-btn">
+                    <span>🎤</span>
+                    <span>Hold to Record</span>
+                </button>
+            </div>
+            <div class="transcript-box">
+                <h3>Your Message (STT)</h3>
+                <p id="transcript">-</p>
+            </div>
+            <div class="response-box">
+                <h3>Assistant Response (Streaming)</h3>
+                <p id="response">-</p>
+            </div>
+            <audio id="audioPlayer" class="audio-player" controls></audio>
+        </div>
+
+        <div class="button-group" style="margin-top: 15px;">
+            <button id="clearBtn" class="clear-btn">Clear History</button>
+            <button id="testMapBtn" class="clear-btn" style="background: #667eea; color: white;" onclick="handleMapButtonClick()">🗺️ Test Map Selection</button>
+        </div>
+
+        <div class="session-info">
+            Session ID: <span id="sessionId">-</span>
+        </div>
+    </div>
+
+    <!-- Map Selection Modal -->
+    <div id="mapModal" class="map-modal">
+        <div class="map-container">
+            <h2>📍 Select Pickup and Dropoff Locations</h2>
+            <div class="map-instructions">
+                <strong>Instructions:</strong>
+                <span id="mapInstructions">Type to search for a location, or click on the map to select your pickup location, then click again for dropoff.</span>
+            </div>
+            <div class="search-inputs">
+                <div class="search-input-group">
+                    <label for="pickupSearch">🔍 Search Pickup Location:</label>
+                    <input type="text" id="pickupSearch" placeholder="Type to search for pickup location..." autocomplete="off">
+                </div>
+                <div class="search-input-group">
+                    <label for="dropoffSearch">🔍 Search Dropoff Location:</label>
+                    <input type="text" id="dropoffSearch" placeholder="Type to search for dropoff location..." autocomplete="off">
+                </div>
+            </div>
+            <div class="location-info">
+                <div class="location-card" id="pickupCard">
+                    <h4>Pickup Location</h4>
+                    <p id="pickupInfo">Not selected</p>
+                </div>
+                <div class="location-card" id="dropoffCard">
+                    <h4>Dropoff Location</h4>
+                    <p id="dropoffInfo">Not selected</p>
+                </div>
+            </div>
+            <div class="map-wrapper">
+                <div id="map"></div>
+            </div>
+            <div class="map-actions">
+                <button class="map-btn secondary" onclick="closeMapModal()">Cancel</button>
+                <button class="map-btn primary" id="doneMapBtn" onclick="submitMapLocations()" disabled>Done</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Google Maps variables
+        let map = null;
+        let pickupMarker = null;
+        let dropoffMarker = null;
+        let pickupLocation = null;
+        let dropoffLocation = null;
+        let geocoder = null;
+        let selectionMode = 'pickup'; // 'pickup' or 'dropoff'
+        let pendingMapRequest = null; // Store the tool call that triggered map
+        let pickupAutocomplete = null;
+        let dropoffAutocomplete = null;
+
+        // Initialize Google Maps (called by API callback)
+        function initMap() {
+            // Map will be initialized when modal opens
+            console.log('Google Maps API loaded');
+        }
+
+        function showMapModal(toolCallData = null) {
+            // Check if we have an API key (either loaded or manually entered)
+            const keyInput = document.getElementById('googleMapsKey');
+            let apiKey = '';
+            
+            // Get API key from input field (handle masked keys)
+            if (keyInput) {
+                const inputValue = keyInput.value.trim();
+                // Check if it's a masked key (contains "...")
+                if (inputValue.includes('...')) {
+                    // Use the stored key if available
+                    apiKey = GOOGLE_MAPS_API_KEY || localStorage.getItem('googleMapsApiKey') || '';
+                } else {
+                    apiKey = inputValue;
+                }
+            }
+            
+            // Fallback to stored key
+            if (!apiKey) {
+                apiKey = GOOGLE_MAPS_API_KEY || localStorage.getItem('googleMapsApiKey') || '';
+            }
+            
+            if (!apiKey || apiKey.length < 20) {
+                showStatus('Please enter your Google Maps API key first to use map selection.', 'error');
+                if (keyInput) {
+                    keyInput.focus();
+                    keyInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+                return;
+            }
+            
+            // If API key is manually entered but not loaded yet, load it now
+            if (apiKey && (!mapsApiLoaded || GOOGLE_MAPS_API_KEY !== apiKey)) {
+                if (!mapsApiLoaded) {
+                    showStatus('Loading Google Maps...', 'info');
+                }
+                loadGoogleMapsWithKey(apiKey);
+            }
+            
+            // Check if Google Maps API is available
+            if (typeof google === 'undefined' || !google.maps) {
+                // Wait a bit for the API to load, then try again
+                showStatus('Google Maps is loading... Please wait a moment.', 'info');
+                let attempts = 0;
+                const maxAttempts = 10;
+                
+                const checkGoogleMaps = setInterval(() => {
+                    attempts++;
+                    if (typeof google !== 'undefined' && google.maps) {
+                        clearInterval(checkGoogleMaps);
+                        hideStatus();
+                        // Retry opening the modal
+                        setTimeout(() => showMapModal(toolCallData), 100);
+                    } else if (attempts >= maxAttempts) {
+                        clearInterval(checkGoogleMaps);
+                        showStatus('Google Maps failed to load. Please check your API key and reload the page.', 'error');
+                        closeMapModal();
+                    }
+                }, 500);
+                
+                return;
+            }
+            
+            pendingMapRequest = toolCallData;
+            const modal = document.getElementById('mapModal');
+            const mapDiv = document.getElementById('map');
+            
+            // Show modal first
+            modal.classList.add('active');
+            
+            // Wait a bit for modal to be visible before initializing map
+            setTimeout(() => {
+                // Initialize map if not already done
+                if (!map) {
+                    // Double-check Google Maps is available
+                    if (typeof google === 'undefined' || !google.maps) {
+                        showStatus('Google Maps API not loaded. Please check your API key and reload the page.', 'error');
+                        closeMapModal();
+                        return;
+                    }
+                    
+                    // Ensure map div is visible and has dimensions
+                    if (!mapDiv || mapDiv.offsetWidth === 0 || mapDiv.offsetHeight === 0) {
+                        console.error('Map div not visible or has no dimensions');
+                        showStatus('Map container not ready. Please try again.', 'error');
+                        return;
+                    }
+                    
+                    // Default to Lahore, Pakistan (or get user's location)
+                    const defaultCenter = { lat: 31.5497, lng: 74.3436 };
+                    
+                    try {
+                        map = new google.maps.Map(mapDiv, {
+                            center: defaultCenter,
+                            zoom: 13,
+                            mapTypeControl: true,
+                            streetViewControl: true,
+                            fullscreenControl: true,
+                            clickableIcons: true,
+                            draggable: true,
+                            zoomControl: true,
+                        });
+
+                        geocoder = new google.maps.Geocoder();
+
+                        // Initialize Places Autocomplete for pickup
+                        const pickupInput = document.getElementById('pickupSearch');
+                        if (pickupInput && google.maps && google.maps.places && google.maps.places.Autocomplete) {
+                            try {
+                                pickupAutocomplete = new google.maps.places.Autocomplete(pickupInput, {
+                                    fields: ['geometry', 'formatted_address', 'name'],
+                                    types: ['establishment', 'geocode']
+                                });
+                                
+                                pickupAutocomplete.addListener('place_changed', () => {
+                                    const place = pickupAutocomplete.getPlace();
+                                    if (place.geometry && place.geometry.location) {
+                                        const location = {
+                                            lat: place.geometry.location.lat(),
+                                            lng: place.geometry.location.lng(),
+                                            address: place.formatted_address || place.name
+                                        };
+                                        setPickupLocation(location);
+                                        // Center map on selected location
+                                        if (map) {
+                                            map.setCenter(location);
+                                            map.setZoom(15);
+                                        }
+                                    }
+                                });
+                                console.log('Pickup autocomplete initialized');
+                            } catch (error) {
+                                console.error('Error initializing pickup autocomplete:', error);
+                            }
+                        } else {
+                            console.warn('Places library not available for pickup autocomplete');
+                        }
+
+                        // Initialize Places Autocomplete for dropoff
+                        const dropoffInput = document.getElementById('dropoffSearch');
+                        if (dropoffInput && google.maps && google.maps.places && google.maps.places.Autocomplete) {
+                            try {
+                                dropoffAutocomplete = new google.maps.places.Autocomplete(dropoffInput, {
+                                    fields: ['geometry', 'formatted_address', 'name'],
+                                    types: ['establishment', 'geocode']
+                                });
+                                
+                                dropoffAutocomplete.addListener('place_changed', () => {
+                                    const place = dropoffAutocomplete.getPlace();
+                                    if (place.geometry && place.geometry.location) {
+                                        const location = {
+                                            lat: place.geometry.location.lat(),
+                                            lng: place.geometry.location.lng(),
+                                            address: place.formatted_address || place.name
+                                        };
+                                        setDropoffLocation(location);
+                                        // Center map on selected location
+                                        if (map) {
+                                            map.setCenter(location);
+                                            map.setZoom(15);
+                                        }
+                                    }
+                                });
+                                console.log('Dropoff autocomplete initialized');
+                            } catch (error) {
+                                console.error('Error initializing dropoff autocomplete:', error);
+                            }
+                        } else {
+                            console.warn('Places library not available for dropoff autocomplete');
+                        }
+
+                        // Try to get user's current location
+                        if (navigator.geolocation) {
+                            navigator.geolocation.getCurrentPosition(
+                                (position) => {
+                                    const userLocation = {
+                                        lat: position.coords.latitude,
+                                        lng: position.coords.longitude
+                                    };
+                                    if (map) {
+                                        map.setCenter(userLocation);
+                                        map.setZoom(15);
+                                    }
+                                },
+                                () => {
+                                    console.log('Geolocation failed, using default location');
+                                }
+                            );
+                        }
+
+                        // Add click listener to map
+                        map.addListener('click', (event) => {
+                            handleMapClick(event.latLng);
+                        });
+                        
+                        // Trigger resize to ensure map renders properly
+                        setTimeout(() => {
+                            if (map && google && google.maps) {
+                                google.maps.event.trigger(map, 'resize');
+                            }
+                        }, 100);
+                        
+                        console.log('Map initialized successfully');
+                    } catch (error) {
+                        console.error('Error initializing map:', error);
+                        showStatus('Error initializing map: ' + error.message, 'error');
+                        closeMapModal();
+                    }
+                } else {
+                    // Map already exists, just trigger resize and recenter
+                    if (map && google && google.maps) {
+                        google.maps.event.trigger(map, 'resize');
+                        // Reset to default center
+                        map.setCenter({ lat: 31.5497, lng: 74.3436 });
+                        map.setZoom(13);
+                    }
+                }
+            }, 100); // Small delay to ensure modal is visible
+
+            // Reset state
+            pickupLocation = null;
+            dropoffLocation = null;
+            selectionMode = 'pickup';
+            if (pickupMarker) pickupMarker.setMap(null);
+            if (dropoffMarker) dropoffMarker.setMap(null);
+            pickupMarker = null;
+            dropoffMarker = null;
+            
+            // Clear search inputs
+            const pickupInput = document.getElementById('pickupSearch');
+            const dropoffInput = document.getElementById('dropoffSearch');
+            if (pickupInput) pickupInput.value = '';
+            if (dropoffInput) dropoffInput.value = '';
+            
+            updateLocationCards();
+            updateMapInstructions();
+            updateDoneButton();
+        }
+
+        function closeMapModal() {
+            const modal = document.getElementById('mapModal');
+            modal.classList.remove('active');
+            pendingMapRequest = null;
+        }
+
+        function setPickupLocation(location) {
+            pickupLocation = location;
+            // Remove existing marker
+            if (pickupMarker) pickupMarker.setMap(null);
+            // Add new marker
+            pickupMarker = new google.maps.Marker({
+                position: location,
+                map: map,
+                label: 'P',
+                title: 'Pickup Location',
+                icon: {
+                    path: google.maps.SymbolPath.CIRCLE,
+                    scale: 8,
+                    fillColor: '#4CAF50',
+                    fillOpacity: 1,
+                    strokeColor: '#fff',
+                    strokeWeight: 2
+                }
+            });
+            selectionMode = 'dropoff';
+            if (location.address) {
+                document.getElementById('pickupInfo').textContent = location.address;
+            } else {
+                getAddressForLocation(location, 'pickup');
+            }
+            updateLocationCards();
+            updateMapInstructions();
+            updateDoneButton();
+        }
+
+        function setDropoffLocation(location) {
+            dropoffLocation = location;
+            // Remove existing marker
+            if (dropoffMarker) dropoffMarker.setMap(null);
+            // Add new marker
+            dropoffMarker = new google.maps.Marker({
+                position: location,
+                map: map,
+                label: 'D',
+                title: 'Dropoff Location',
+                icon: {
+                    path: google.maps.SymbolPath.CIRCLE,
+                    scale: 8,
+                    fillColor: '#F44336',
+                    fillOpacity: 1,
+                    strokeColor: '#fff',
+                    strokeWeight: 2
+                }
+            });
+            if (location.address) {
+                document.getElementById('dropoffInfo').textContent = location.address;
+            } else {
+                getAddressForLocation(location, 'dropoff');
+            }
+            updateLocationCards();
+            updateMapInstructions();
+            updateDoneButton();
+        }
+
+        function handleMapClick(latLng) {
+            const location = {
+                lat: latLng.lat(),
+                lng: latLng.lng()
+            };
+
+            if (selectionMode === 'pickup') {
+                setPickupLocation(location);
+                getAddressForLocation(location, 'pickup');
+            } else {
+                setDropoffLocation(location);
+                getAddressForLocation(location, 'dropoff');
+            }
+        }
+
+        function getAddressForLocation(location, type) {
+            if (!geocoder) return;
+            
+            geocoder.geocode({ location: location }, (results, status) => {
+                if (status === 'OK' && results[0]) {
+                    const address = results[0].formatted_address;
+                    if (type === 'pickup') {
+                        if (pickupLocation) pickupLocation.address = address;
+                        document.getElementById('pickupInfo').textContent = address;
+                    } else {
+                        if (dropoffLocation) dropoffLocation.address = address;
+                        document.getElementById('dropoffInfo').textContent = address;
+                    }
+                } else {
+                    const coords = `${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}`;
+                    if (type === 'pickup') {
+                        if (pickupLocation) pickupLocation.address = coords;
+                        document.getElementById('pickupInfo').textContent = coords;
+                    } else {
+                        if (dropoffLocation) dropoffLocation.address = coords;
+                        document.getElementById('dropoffInfo').textContent = coords;
+                    }
+                }
+            });
+        }
+
+        function updateLocationCards() {
+            const pickupCard = document.getElementById('pickupCard');
+            const dropoffCard = document.getElementById('dropoffCard');
+            
+            if (pickupLocation) {
+                pickupCard.classList.add('active');
+            } else {
+                pickupCard.classList.remove('active');
+            }
+            
+            if (dropoffLocation) {
+                dropoffCard.classList.add('active');
+            } else {
+                dropoffCard.classList.remove('active');
+            }
+        }
+
+        function updateMapInstructions() {
+            const instructions = document.getElementById('mapInstructions');
+            if (!pickupLocation) {
+                instructions.textContent = 'Type to search for a location, or click on the map to select your pickup location.';
+            } else if (!dropoffLocation) {
+                instructions.textContent = 'Type to search for a location, or click on the map to select your dropoff location.';
+            } else {
+                instructions.textContent = 'Both locations selected! Click "Done" to continue.';
+            }
+        }
+
+        function updateDoneButton() {
+            const doneBtn = document.getElementById('doneMapBtn');
+            doneBtn.disabled = !(pickupLocation && dropoffLocation);
+        }
+
+        async function submitMapLocations() {
+            if (!pickupLocation || !dropoffLocation) {
+                showStatus('Please select both pickup and dropoff locations', 'error');
+                return;
+            }
+
+            const token = document.getElementById('token').value.trim();
+            const apiUrl = document.getElementById('apiUrl').value.trim();
+
+            if (!token) {
+                showStatus('Please enter a JWT token', 'error');
+                return;
+            }
+
+            showStatus('Sending locations to assistant...', 'info');
+            closeMapModal();
+
+            // Format locations for assistant
+            const pickup = {
+                lat: pickupLocation.lat,
+                lng: pickupLocation.lng,
+                address: pickupLocation.address || `${pickupLocation.lat}, ${pickupLocation.lng}`
+            };
+
+            const dropoff = {
+                lat: dropoffLocation.lat,
+                lng: dropoffLocation.lng,
+                address: dropoffLocation.address || `${dropoffLocation.lat}, ${dropoffLocation.lng}`
+            };
+
+            // Send locations to assistant as a structured message
+            // The assistant will parse this and call set_trip_core
+            const locationMessage = `I've selected my locations. Pickup: ${pickup.address} (${pickup.lat}, ${pickup.lng}), Dropoff: ${dropoff.address} (${dropoff.lat}, ${dropoff.lng})`;
+
+            // Add a user message showing the selection
+            addMessageToChat('user', `📍 Selected locations:\nPickup: ${pickup.address}\nDropoff: ${dropoff.address}`);
+
+            // Send to assistant
+            try {
+                const chatResponse = await fetch(`${apiUrl}/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        user_message: locationMessage
+                    })
+                });
+
+                if (!chatResponse.ok) {
+                    const error = await chatResponse.text();
+                    throw new Error(`Chat failed: ${chatResponse.status} - ${error}`);
+                }
+
+                // Stream the response
+                const reader = chatResponse.body.getReader();
+                const decoder = new TextDecoder();
+                let assistantText = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value, { stream: true });
+                    assistantText += chunk;
+                    updateStreamingMessage(assistantText);
+                }
+
+                if (assistantText.trim()) {
+                    finalizeStreamingMessage();
+                    showStatus('✅ Locations sent!', 'success');
+                    setTimeout(hideStatus, 2000);
+                }
+
+            } catch (err) {
+                showStatus('Error: ' + err.message, 'error');
+                console.error('Error sending locations:', err);
+            }
+        }
+
+        // Check for tool calls in assistant responses
+        function checkForToolCalls(assistantMessage) {
+            // Look for request_map_selection tool call indicators
+            // The assistant might say things like:
+            // - "Please select your pickup and dropoff locations on the map"
+            // - "I'll show you a map to select locations"
+            // - Or the tool result might contain "action": "show_map"
+            
+            const lowerMessage = assistantMessage.toLowerCase();
+            
+            // Check for explicit map selection requests
+            const mapSelectionPatterns = [
+                /select.*pickup.*dropoff.*map/i,
+                /select.*location.*map/i,
+                /show.*map/i,
+                /map.*select/i,
+                /pickup.*dropoff.*select/i,
+                /location.*selection/i
+            ];
+            
+            const hasMapPattern = mapSelectionPatterns.some(pattern => pattern.test(assistantMessage));
+            
+            // Also check for tool call result indicators (if server returns them)
+            // Tool result format: {"ok": true, "action": "show_map", ...}
+            const hasToolResult = assistantMessage.includes('"action":"show_map"') || 
+                                 assistantMessage.includes("'action': 'show_map'") ||
+                                 assistantMessage.includes('show_map');
+            
+            if (hasMapPattern || hasToolResult) {
+                console.log('Map selection detected in assistant response');
+                showMapModal();
+                return true;
+            }
+            
+            return false;
+        }
+        
+        // Enhanced: Check conversation history for tool calls
+        // This would require storing full conversation with tool calls
+        // For now, we rely on message content detection
+
+        // Store conversation messages to track tool calls
+        let conversationMessages = [];
+        
+        // Enhanced: Parse tool calls from assistant response
+        // In a real implementation, the server would return tool call information
+        // For now, we detect from message content and also allow manual triggering
+    </script>
+
+    <script>
+        const API_BASE = document.getElementById('apiUrl').value;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let sessionId = null;
+        let isRecording = false;
+
+        // Generate session ID on load
+        function generateSessionId() {
+            sessionId = 'session-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+            document.getElementById('sessionId').textContent = sessionId;
+        }
+        generateSessionId();
+
+        const recordBtn = document.getElementById('recordBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const statusDiv = document.getElementById('status');
+        const transcriptP = document.getElementById('transcript');
+        const responseP = document.getElementById('response');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const chatHistory = document.getElementById('chatHistory');
+        const chatInput = document.getElementById('chatInput');
+        const sendBtn = document.getElementById('sendBtn');
+
+        function showStatus(message, type = 'info') {
+            statusDiv.className = `status ${type}`;
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+        }
+
+        function hideStatus() {
+            statusDiv.style.display = 'none';
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    await processAudio(audioBlob);
+                    stream.getTracks().forEach(track => track.stop());
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                recordBtn.classList.add('recording');
+                recordBtn.innerHTML = '<span>🔴</span><span>Recording...</span>';
+                showStatus('Recording... Speak now!', 'info');
+            } catch (err) {
+                showStatus('Error accessing microphone: ' + err.message, 'error');
+                console.error('Microphone error:', err);
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+                recordBtn.classList.remove('recording');
+                recordBtn.innerHTML = '<span>🎤</span><span>Hold to Record</span>';
+                showStatus('Processing audio...', 'info');
+            }
+        }
+
+        async function processAudio(audioBlob) {
+            const token = document.getElementById('token').value.trim();
+            const apiUrl = document.getElementById('apiUrl').value.trim();
+
+            if (!token) {
+                showStatus('Please enter a JWT token', 'error');
+                return;
+            }
+
+            try {
+                // Step 1: Speech-to-Text
+                showStatus('Transcribing audio...', 'info');
+                const formData = new FormData();
+                formData.append('file', audioBlob, 'recording.webm');
+                formData.append('language', 'en');
+                formData.append('session_id', sessionId);
+
+                const sttResponse = await fetch(`${apiUrl}/stt`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: formData
+                });
+
+                if (!sttResponse.ok) {
+                    const error = await sttResponse.text();
+                    throw new Error(`STT failed: ${sttResponse.status} - ${error}`);
+                }
+
+                const sttData = await sttResponse.json();
+                if (!sttData.ok || !sttData.text) {
+                    throw new Error('No transcript received from STT');
+                }
+
+                transcriptP.textContent = sttData.text;
+                addMessageToChat('user', sttData.text);
+                showStatus('Transcript received! Sending to assistant...', 'success');
+
+                // Step 2: Chat (streaming)
+                const chatResponse = await fetch(`${apiUrl}/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        user_message: sttData.text
+                    })
+                });
+
+                if (!chatResponse.ok) {
+                    const error = await chatResponse.text();
+                    throw new Error(`Chat failed: ${chatResponse.status} - ${error}`);
+                }
+
+                // Stream the response
+                responseP.textContent = '';
+                const reader = chatResponse.body.getReader();
+                const decoder = new TextDecoder();
+                let assistantText = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value, { stream: true });
+                    assistantText += chunk;
+                    responseP.textContent = assistantText;
+                    updateStreamingMessage(assistantText);
+                }
+
+                if (!assistantText.trim()) {
+                    throw new Error('Empty response from assistant');
+                }
+
+                finalizeStreamingMessage();
+                
+                // Check if assistant is requesting map selection
+                if (checkForToolCalls(assistantText)) {
+                    // Map modal will be shown by checkForToolCalls
+                    showStatus('📍 Please select locations on the map', 'info');
+                    return; // Don't proceed with TTS if map is needed
+                }
+                
+                showStatus('Response received! Generating speech...', 'success');
+
+                // Step 3: Text-to-Speech
+                const ttsResponse = await fetch(`${apiUrl}/tts`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        text: assistantText
+                    })
+                });
+
+                if (!ttsResponse.ok) {
+                    const error = await ttsResponse.text();
+                    throw new Error(`TTS failed: ${ttsResponse.status} - ${error}`);
+                }
+
+                const ttsAudioBlob = await ttsResponse.blob();
+                const audioUrl = URL.createObjectURL(ttsAudioBlob);
+                audioPlayer.src = audioUrl;
+                audioPlayer.play();
+
+                showStatus('✅ Complete! Audio playing...', 'success');
+                setTimeout(hideStatus, 3000);
+
+            } catch (err) {
+                showStatus('Error: ' + err.message, 'error');
+                console.error('Processing error:', err);
+                // Remove streaming message on error
+                const streamingMsg = chatHistory.querySelector('.chat-message.assistant.streaming');
+                if (streamingMsg) {
+                    streamingMsg.remove();
+                }
+            }
+        }
+
+        // Mode switching
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const mode = btn.dataset.mode;
+                document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                document.querySelectorAll('.voice-section, .chat-section').forEach(s => s.classList.remove('active'));
+                if (mode === 'voice') {
+                    document.querySelector('.voice-section').classList.add('active');
+                } else {
+                    document.querySelector('.chat-section').classList.add('active');
+                }
+            });
+        });
+
+        // Add message to chat history
+        function addMessageToChat(role, content) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `chat-message ${role}`;
+            messageDiv.innerHTML = `
+                <div class="role">${role === 'user' ? 'You' : 'Assistant'}</div>
+                <div class="content">${content}</div>
+            `;
+            chatHistory.appendChild(messageDiv);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+
+        // Update streaming message in chat
+        function updateStreamingMessage(content) {
+            let streamingMsg = chatHistory.querySelector('.chat-message.assistant.streaming');
+            if (!streamingMsg) {
+                streamingMsg = document.createElement('div');
+                streamingMsg.className = 'chat-message assistant streaming';
+                streamingMsg.innerHTML = `
+                    <div class="role">Assistant</div>
+                    <div class="content"></div>
+                `;
+                chatHistory.appendChild(streamingMsg);
+            }
+            streamingMsg.querySelector('.content').textContent = content;
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+
+        // Finalize streaming message
+        function finalizeStreamingMessage() {
+            const streamingMsg = chatHistory.querySelector('.chat-message.assistant.streaming');
+            if (streamingMsg) {
+                streamingMsg.classList.remove('streaming');
+            }
+        }
+
+        // Send text message
+        async function sendTextMessage() {
+            const text = chatInput.value.trim();
+            if (!text) return;
+
+            const token = document.getElementById('token').value.trim();
+            const apiUrl = document.getElementById('apiUrl').value.trim();
+
+            if (!token) {
+                showStatus('Please enter a JWT token', 'error');
+                return;
+            }
+
+            // Add user message to chat
+            addMessageToChat('user', text);
+            chatInput.value = '';
+            sendBtn.disabled = true;
+            showStatus('Sending message...', 'info');
+
+            try {
+                // Call chat endpoint
+                const chatResponse = await fetch(`${apiUrl}/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        user_message: text
+                    })
+                });
+
+                if (!chatResponse.ok) {
+                    const error = await chatResponse.text();
+                    throw new Error(`Chat failed: ${chatResponse.status} - ${error}`);
+                }
+
+                // Stream the response
+                const reader = chatResponse.body.getReader();
+                const decoder = new TextDecoder();
+                let assistantText = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value, { stream: true });
+                    assistantText += chunk;
+                    updateStreamingMessage(assistantText);
+                }
+
+                if (!assistantText.trim()) {
+                    throw new Error('Empty response from assistant');
+                }
+
+                finalizeStreamingMessage();
+                
+                // Check if assistant is requesting map selection
+                if (checkForToolCalls(assistantText)) {
+                    // Map modal will be shown by checkForToolCalls
+                    showStatus('📍 Please select locations on the map', 'info');
+                } else {
+                    showStatus('✅ Response received!', 'success');
+                    setTimeout(hideStatus, 2000);
+                }
+
+            } catch (err) {
+                showStatus('Error: ' + err.message, 'error');
+                console.error('Chat error:', err);
+                // Remove streaming message on error
+                const streamingMsg = chatHistory.querySelector('.chat-message.assistant.streaming');
+                if (streamingMsg) {
+                    streamingMsg.remove();
+                }
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        // Mouse/Touch events for recording
+        recordBtn.addEventListener('mousedown', startRecording);
+        recordBtn.addEventListener('mouseup', stopRecording);
+        recordBtn.addEventListener('mouseleave', stopRecording);
+
+        // Touch events for mobile
+        recordBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            startRecording();
+        });
+        recordBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            stopRecording();
+        });
+
+        clearBtn.addEventListener('click', () => {
+            transcriptP.textContent = '-';
+            responseP.textContent = '-';
+            audioPlayer.src = '';
+            chatHistory.innerHTML = `
+                <div class="chat-message assistant">
+                    <div class="role">Assistant</div>
+                    <div class="content">Hi! I'm LumiDrive. How can I help you book a ride today?</div>
+                </div>
+            `;
+            generateSessionId();
+            hideStatus();
+        });
+
+        // Update API URL when changed
+        document.getElementById('apiUrl').addEventListener('change', (e) => {
+            // Just update the variable, no need to reload
+        });
+    </script>
+</body>
+</html>
+

@@ -347,6 +347,8 @@ BID_ACCEPT_PATH           = os.getenv("BID_ACCEPT_PATH")
 CUSTOMER_RIDE_PATH        = os.getenv("CUSTOMER_RIDE_PATH")
 CANCEL_AS_CUSTOMER_PATH   = os.getenv("CANCEL_AS_CUSTOMER_PATH")
 FARE_PATH                 = os.getenv("FARE_PATH", "/api/v1/rides/fare/all")
+# Currency endpoint
+CURRENCY_PATH             = os.getenv("CURRENCY_PATH", "/api/v1/currency")
 
 # Optional helpers/endpoints
 OFFER_FARE_PATH                 = "/api/v1/rides/{id}/offer-fare"
@@ -356,7 +358,7 @@ COMPLETE_RIDE_PATH              = "/api/v1/rides/{rideId}/complete-ride"
 RIDE_DETAILS_PATH               = "/api/v1/rides/ride-details/{rideId}"
 ONGOING_ACTIVE_CUSTOMER_PATH    = "/api/v1/rides/ongoing/active/customer"
 
-DEFAULT_PAYMENT_VIA       = os.getenv("DEFAULT_PAYMENT_VIA", "WALLET")
+DEFAULT_PAYMENT_VIA       = os.getenv("DEFAULT_PAYMENT_VIA", "CASH")
 DEFAULT_IS_HOURLY         = os.getenv("DEFAULT_IS_HOURLY", "false").lower() == "true"
 DEFAULT_IS_SCHEDULED      = os.getenv("DEFAULT_IS_SCHEDULED", "false").lower() == "true"
 CUSTOMER_ID               = os.getenv("CUSTOMER_ID")  # optional
@@ -390,6 +392,19 @@ def list_ride_types():
         return []
 
 
+def list_currencies():
+    """
+    Fetch list of currencies from the backend.
+    Returns a list (may be empty) of currency objects.
+    """
+    resp = get(CURRENCY_PATH)
+    try:
+        data = resp.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
 # ---------------------------
 # Distance helpers
 # ---------------------------
@@ -416,12 +431,13 @@ def _route_distance_km(pickup: dict, dropoff: dict, stops: list | None) -> float
 # ---------------------------
 # Fare (use documented query params)
 # ---------------------------
-def get_fare(pickup: dict, dropoff: dict, stops: list | None = None):
+def get_fare(pickup: dict, dropoff: dict, stops: list | None = None, distance_km: float | None = None, duration_min: float | None = None):
     """
     Calls /api/v1/rides/fare/all with the official parameters:
     - isNightRide, waitingMinutes, isHourly, durationMin, distanceKm
 
-    We estimate distance/duration from coordinates so backend can compute a fare.
+    If distance_km and duration_min are provided (e.g., from Google Maps), use them.
+    Otherwise, estimate distance/duration from coordinates using haversine.
     Even if fare is null, computed distance & duration are returned for use in
     the create-ride payload as estimated_distance / estimated_time.
     """
@@ -438,10 +454,16 @@ def get_fare(pickup: dict, dropoff: dict, stops: list | None = None):
         if s.get("lat") is not None and s.get("lng") is not None:
             s_clean.append({"lat": s.get("lat"), "lng": s.get("lng")})
 
-    distance_km = _route_distance_km(p, d, s_clean)
-    duration_min = (distance_km / max(FARE_AVG_SPEED_KMH, 1e-6)) * 60.0
+    # Use provided Google Maps values if available, otherwise calculate using haversine
+    if distance_km is None or duration_min is None:
+        distance_km = _route_distance_km(p, d, s_clean)
+        duration_min = (distance_km / max(FARE_AVG_SPEED_KMH, 1e-6)) * 60.0
 
     params = {
+        "pickup_lat": p.get("lat"),
+        "pickup_lng": p.get("lng"),
+        "dropoff_lat": d.get("lat"),
+        "dropoff_lng": d.get("lng"),
         "isNightRide": str(FARE_IS_NIGHT).lower(),
         "waitingMinutes": FARE_WAITING_MINUTES,
         "isHourly": "false",
@@ -468,10 +490,19 @@ def get_fare(pickup: dict, dropoff: dict, stops: list | None = None):
 def pick_ride_type_id_from_fare(fare_json: dict, desired_name: str | None) -> str | None:
     if not desired_name:
         return None
+    
+    def _normalize_ride_type_name(name: str) -> str:
+        """Normalize ride type name for matching (handles spaces, underscores, case)"""
+        if not name:
+            return ""
+        return name.strip().lower().replace(" ", "").replace("_", "")
+    
     try:
+        desired_normalized = _normalize_ride_type_name(desired_name)
         for it in (fare_json.get("rideTypeFares") or []):
-            name = (it.get("name") or "").strip().lower()
-            if name == desired_name.strip().lower():
+            api_name = (it.get("name") or "").strip()
+            api_name_normalized = _normalize_ride_type_name(api_name)
+            if api_name_normalized == desired_normalized:
                 return it.get("ride_type_id")
     except Exception:
         pass
@@ -588,7 +619,7 @@ def list_bids_for_request(ride_request_id: str):
 
 
 def accept_bid(bid_id: str,
-               payment_via: str = "WALLET",
+               payment_via: str = "CASH",
                is_schedule: bool = False,
                scheduled_at: str | None = None,
                customer_id: str | None = None):
