@@ -467,6 +467,7 @@
 
 import os, json, sys, re
 from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -500,14 +501,35 @@ SMART BOOKING WORKFLOW:
    - Dropoff location (place name, address, or coordinates)
    - Ride type (e.g., "LUMI_GO", "Lumi GO", "Courier", "Bike", etc.)
 
-2. RESOLVE LOCATIONS (FOR BOOKING, LET TOOLS HANDLE IT): 
+2. RIDE TYPE AWARENESS (CRITICAL):
+   - Common ride types you may encounter (but ALWAYS verify with list_ride_types): LUMI_GO, LUMI_PLUS, LUMI_MAX, LUMI_PLATINUM, LUMI_PINK, LUMI_DIAMOND, Courier, Bike, 4W_MINI, Honda AC
+   - ALWAYS call list_ride_types FIRST in these situations:
+     * When user mentions a ride type (e.g., "Lumi GO", "Lumi Pink", "Courier") - call it IMMEDIATELY to validate
+     * When asking user to select a ride type - call it FIRST to show available options
+     * Before calling set_ride_type or book_ride_with_details with a ride_type parameter
+   - Use the actual ride types from the API - NEVER guess or assume ride type names
+   - If user mentions a ride type that matches (e.g., "Lumi Pink" matches "LUMI_PINK"), summarize the booking details and ask for confirmation: "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" After user confirms, THEN call book_ride_with_details.
+   - If user mentions a ride type that doesn't match exactly, try to match it intelligently (e.g., "Lumi GO" matches "LUMI_GO")
+   - If no match is found after calling list_ride_types, show the user the available ride types from the API response and ask them to choose
+   - NEVER proceed with booking if the ride type doesn't match - always validate first with list_ride_types
+
+3. RESOLVE LOCATIONS (FOR BOOKING, LET TOOLS HANDLE IT): 
    - For normal booking flows, DO NOT call resolve_place_to_coordinates or set_trip_core directly once you have all details.
    - Instead, call book_ride_with_details and let the internal workflow resolve coordinates and set the trip.
    - Only call resolve_place_to_coordinates directly if the user explicitly asks for coordinates/address information (not for booking).
+   - **IMPORTANT**: When user provides location names (even if ambiguous like "E11" or "H13"), ALWAYS proceed with book_ride_with_details. DO NOT call request_map_selection. The system will try to resolve the locations, and if it fails, it will ask the user for city names. Only use request_map_selection if the user explicitly asks for it or if location resolution has completely failed.
 
-3. ASK FOR MISSING INFO: If any detail is missing (pickup, dropoff, or ride type), politely ask the user for it.
+4. ASK FOR MISSING INFO: If any detail is missing (pickup, dropoff, or ride type), politely ask the user for it. 
+   - **CRITICAL FOR RIDE TYPE**: When asking for ride type OR when user mentions a ride type, you MUST call list_ride_types FIRST before responding. NEVER guess ride types - always fetch them from the API.
+   - After calling list_ride_types, present the actual available ride types from the API response to the user.
+   - If user mentions a ride type that doesn't match, call list_ride_types to get the actual list and show it to them.
 
-4. AUTOMATIC BOOKING (IMMEDIATE - NO CONFIRMATION NEEDED): Once you have ALL three pieces of information (pickup, dropoff, ride_type), IMMEDIATELY call book_ride_with_details without asking for confirmation. Call it with:
+5. BOOKING CONFIRMATION: 
+   - ALWAYS ask for confirmation before booking, regardless of whether information is provided in one message or multiple messages.
+   - When you have ALL three pieces of information (pickup, dropoff, ride_type), ask the user for confirmation with a natural question like "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?"
+   - DO NOT send intermediate status messages like "I will proceed with booking", "Let's confirm your booking", "Please hold on", or "I'll finalize this for you". Just ask for confirmation directly.
+   - After the user confirms (says "yes", "okay", "proceed", "book it", etc.), THEN call book_ride_with_details.
+   Call book_ride_with_details with:
    - pickup_place: The pickup location (place name or coordinates)
    - dropoff_place: The dropoff location (place name, address, or coordinates)
    - ride_type: The selected ride type name
@@ -521,19 +543,24 @@ SMART BOOKING WORKFLOW:
    - Accept the best (lowest fare) bid
    - Return success message
 
-5. CONFIRM BOOKING: Inform the user that their ride has been booked successfully, in a single concise message.
+6. CONFIRM BOOKING: Inform the user that their ride has been booked successfully, in a single concise message.
 
 CRITICAL RULES:
 - Be intelligent and natural in conversation - extract information from user messages without being robotic.
-- If user provides complete information in one message (e.g., "I want to go from X to Y on Lumi GO"), extract all details and IMMEDIATELY call book_ride_with_details - DO NOT wait for user confirmation.
+- If user provides complete information in one message (e.g., "I want to go from X to Y on Lumi GO"), extract all details and ask for confirmation: "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" DO NOT send intermediate status messages like "I will proceed with booking", "Let's confirm your booking", "Please hold on", or "I'll finalize this for you". Just ask for confirmation directly.
+- If user provides locations (even if ambiguous like "E11" or "H13"), proceed with book_ride_with_details - DO NOT call request_map_selection. The system will handle location resolution and ask for city names if needed.
 - If information is missing, ask for it naturally (e.g., "Which ride type would you like?" or "Where would you like to go?").
-- AFTER you have all three details and have called book_ride_with_details, DO NOT ask the user for anything else; wait for the tool result and then reply with a single final confirmation.
-- NEVER ask "should I book?", "proceed?", or similar questions - just book automatically when you have all info.
-- NEVER say "please hold on", "I'll proceed to", "I'll go ahead and", or other filler status messages. Minimize intermediate updates.
+- **MANDATORY: When user mentions ANY ride type OR when you need to ask for ride type, you MUST call list_ride_types FIRST. Do this BEFORE responding to the user. Never mention ride types without first calling list_ride_types to get the actual available options from the API.**
+- DO NOT call request_map_selection unless the user explicitly asks to use a map or location resolution has completely failed after asking for city names.
+- ALWAYS ask for confirmation before booking. When you have all three details (pickup, dropoff, ride_type), ask the user for confirmation with a natural question like "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" After the user confirms (yes, okay, proceed, book it, etc.), THEN call book_ride_with_details. Wait for the tool result and then reply with a single final confirmation message.
+- NEVER say "I will now proceed to book", "I'll proceed to", "I'll go ahead and", "I'll book now", "Let's confirm your booking", "Please hold on", "I'll finalize this for you", or any other intermediate status messages. Just ask for confirmation directly.
+- FORMATTING: Always use HTML tags for formatting (e.g., <p>, <b>, <ul>, <li>) instead of markdown asterisks. Use <b> for bold, <p> for paragraphs, <ul> and <li> for lists. Never use **bold** or *italic* markdown syntax.
 - NEVER use regex patterns or hardcoded logic - use your intelligence to understand user intent.
 - NEVER guess coordinates - use tools (through book_ride_with_details or resolve_place_to_coordinates) to get them.
+- **NEVER guess or assume ride types - ALWAYS call list_ride_types to get the actual list from the API. If user says "Lumi Pink" or any ride type, call list_ride_types immediately to validate and show available options.**
 - NEVER hallucinate ride types, fares, or driver names - use actual API data.
 - **CRITICAL ERROR HANDLING**: When a tool returns {"ok": False, "error": "..."}, ALWAYS report the exact error message to the user in plain language. NEVER say the booking was successful if there's an error. NEVER make up success messages when tools fail. If there's an error, tell the user what went wrong clearly and concisely.
+- **ROUTE NOT FOUND HANDLING**: If you get an error with "ROUTE_NOT_FOUND" or "Could not find a route", this means the location names are too ambiguous. In this case, politely ask the user to provide the city names for both locations. Do NOT give examples like "E11 Islamabad" - just ask for the city names. Once the user provides the updated locations with city names, retry the booking process by calling book_ride_with_details again with the updated location names.
 - Keep responses friendly, concise, and helpful, ideally confirming the booking in one message once it's done.
 - The book_ride_with_details tool handles everything automatically - you just need to collect the info and call it IMMEDIATELY.
 """
@@ -541,7 +568,7 @@ CRITICAL RULES:
 tools = [
   { "type":"function", "function": {
       "name":"request_map_selection",
-      "description":"Request the user to select pickup and dropoff locations on a map. Use this when the user wants to book a ride but hasn't provided specific coordinates or addresses. The frontend will display a map interface for location selection. Call this when user says they want to book a ride but locations are not yet set.",
+      "description":"Request the user to select pickup and dropoff locations on a map. ONLY use this as a LAST RESORT when: 1) User explicitly asks to use a map, 2) Location resolution has failed multiple times and user hasn't provided city names, 3) User provides NO location information at all. DO NOT call this if user provides location names (even if ambiguous like 'E11' or 'H13') - instead, proceed with book_ride_with_details and let the system try to resolve them. The frontend will display a map interface for location selection.",
       "parameters":{
         "type":"object",
         "properties":{
@@ -555,7 +582,7 @@ tools = [
       "parameters":{
         "type":"object",
         "properties":{
-          "place_name":{"type":"string","description":"Place name or address to resolve, e.g. 'F-6 Markaz, Islamabad' or 'Gaddafi Stadium, Lahore'"},
+          "place_name":{"type":"string","description":"Place name or address to resolve, e.g. 'F-6 Markaz, Islamabad' or 'E11' or 'Gaddafi Stadium, Lahore'."},
         },
         "required":["place_name"]
       }
@@ -611,7 +638,7 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"list_ride_types",
-      "description":"Fetch available ride types from the API. Call this AUTOMATICALLY after set_trip_core is successfully called. Returns ALL ride types with their 'active' status. You MUST present ALL active ride types (where active=true) to the user - never filter or omit any. NEVER make up or guess ride types - always call this function to get the actual list from the API.",
+      "description":"Fetch available ride types from the API. CRITICAL: Call this IMMEDIATELY when: 1) User mentions a ride type (to validate it exists), 2) User asks for ride type options, 3) You need to show available ride types to the user. Returns ALL ride types with their 'active' status. You MUST present ALL active ride types (where active=true) to the user - never filter or omit any. NEVER make up or guess ride types - always call this function to get the actual list from the API. Use this to validate user's ride type selection before proceeding with booking.",
       "parameters":{"type":"object","properties":{}}
   }},
   { "type":"function", "function": {
@@ -627,7 +654,7 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"book_ride_with_details",
-      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (pickup location, dropoff location, and ride type), call this tool to automatically book the ride. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have ALL three: pickup_place (or coordinates), dropoff_place (or coordinates), and ride_type. If any detail is missing, ask the user for it first.",
+      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (pickup location, dropoff location, and ride type), call this tool to automatically book the ride. IMPORTANT: Before calling this with a ride_type, FIRST call list_ride_types to validate the ride type exists. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have ALL three: pickup_place (or coordinates), dropoff_place (or coordinates), and ride_type (validated via list_ride_types). If any detail is missing, ask the user for it first.",
       "parameters":{
         "type":"object",
         "properties":{
@@ -905,10 +932,12 @@ async def tool_resolve_place_to_coordinates(place_name: str):
     Resolve a place name to coordinates using Google Maps Places API.
     Returns coordinates and formatted address.
     """
-    if not place_name or len(place_name.strip()) < 3:
+    import re
+    
+    if not place_name or len(place_name.strip()) < 2:
         return {
             "ok": False,
-            "error": "Place name must be at least 3 characters long.",
+            "error": "Place name must be at least 2 characters long.",
         }
     
     try:
@@ -921,8 +950,11 @@ async def tool_resolve_place_to_coordinates(place_name: str):
                 "error": "Google Maps API key not configured. Cannot resolve place names.",
             }
         
-        # First, try to get place suggestions
-        predictions = await service.fetchPlaces(place_name)
+        place_clean = place_name.strip()
+        
+        # Get place suggestions
+        predictions = await service.fetchPlaces(place_clean)
+        
         if not predictions or len(predictions) == 0:
             return {
                 "ok": False,
@@ -1200,10 +1232,30 @@ async def tool_set_ride_type(ride_type_name: str):
     if not matched_ride_type:
         # Return available ride types so the assistant can inform the user
         available_names = [rt.get("name") for rt in available_ride_types if rt.get("name")]
+        active_names = [rt.get("name") for rt in available_ride_types if rt.get("name") and rt.get("isActive", True)]
+        
+        # Try to find similar ride types (fuzzy matching)
+        similar_suggestions = []
+        user_lower = ride_type_name.lower()
+        for rt in available_ride_types:
+            rt_name = rt.get("name", "")
+            rt_lower = rt_name.lower()
+            # Check for partial matches or similar names
+            if user_lower in rt_lower or rt_lower in user_lower or any(word in rt_lower for word in user_lower.split() if len(word) > 2):
+                similar_suggestions.append(rt_name)
+        
+        error_msg = f"Ride type '{ride_type_name}' not found."
+        if similar_suggestions:
+            error_msg += f" Did you mean: {', '.join(similar_suggestions[:3])}?"
+        else:
+            error_msg += f" Available ride types: {', '.join(active_names) if active_names else ', '.join(available_names)}"
+        
         return {
             "ok": False,
-            "error": f"Ride type '{ride_type_name}' not found. Available ride types: {', '.join(available_names)}",
+            "error": error_msg,
             "available_ride_types": available_names,
+            "active_ride_types": active_names,
+            "similar_suggestions": similar_suggestions[:3] if similar_suggestions else [],
         }
     
     # Set the ride type in STATE
@@ -1275,6 +1327,26 @@ async def tool_get_fare_quote():
             }
         distance_km = google_result.get("distanceKm", 0.0)
         duration_min = google_result.get("durationMin", 0.0)
+    except ValueError as e:
+        # Check if it's a ZERO_RESULTS error (route not found)
+        error_str = str(e)
+        if "ZERO_RESULTS" in error_str or "Invalid route status" in error_str:
+            pickup_addr = STATE.get("pickup_address", "pickup location")
+            dropoff_addr = STATE.get("destination_address", "dropoff location")
+            return {
+                "ok": False,
+                "error": f"ROUTE_NOT_FOUND: Could not find a route between {pickup_addr} and {dropoff_addr}. The location names might be ambiguous. Please provide the city names for both locations.",
+                "error_type": "ROUTE_NOT_FOUND",
+                "suggestion": "Please provide city names for the locations.",
+            }
+        # Other ValueError
+        print(f"⚠️ Google Maps calculation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "ok": False,
+            "error": f"Failed to calculate distance using Google Maps: {str(e)}",
+        }
     except Exception as e:
         print(f"⚠️ Google Maps calculation failed: {e}")
         import traceback

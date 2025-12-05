@@ -84,7 +84,7 @@ def _last_user_message(messages: List[ChatMessage]) -> Optional[str]:
     return None
 
 
-async def _run_tools_for_message(msg, messages: List[Dict[str, Any]]) -> None:
+async def _run_tools_for_message(msg, messages: List[Dict[str, Any]], user_location: Optional[Dict[str, float]] = None) -> None:
     """
     Execute any tool calls in msg and append their outputs to messages.
     This mirrors the logic in assistant.chat_loop but without CLI I/O.
@@ -112,6 +112,7 @@ async def _run_tools_for_message(msg, messages: List[Dict[str, Any]]) -> None:
 
     for tc in msg.tool_calls:
         args = json.loads(tc.function.arguments or "{}")
+        
         try:
             from assistant import tool_create_request_and_poll, call_tool
             import inspect
