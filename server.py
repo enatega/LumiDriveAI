@@ -130,6 +130,12 @@ async def _run_tools_for_message(msg, messages: List[Dict[str, Any]], user_locat
             elif tc.function.name == "get_fare_quote":
                 from assistant import tool_get_fare_quote
                 result = await tool_get_fare_quote()
+            elif tc.function.name == "get_fare_for_locations":
+                from assistant import tool_get_fare_for_locations
+                result = await tool_get_fare_for_locations(**args)
+            elif tc.function.name == "check_active_ride":
+                from assistant import tool_check_active_ride
+                result = tool_check_active_ride()
             elif tc.function.name == "book_ride_with_details":
                 from assistant import tool_book_ride_with_details
                 result = await tool_book_ride_with_details(**args)

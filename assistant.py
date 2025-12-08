@@ -493,7 +493,14 @@ if not OPENAI_API_KEY:
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-SYSTEM = """You are LumiDrive, an intelligent ride-booking assistant. Your job is to help users book rides by collecting all necessary information and then automatically processing the booking.
+SYSTEM = """You are LumiDrive, a professional ride-booking assistant. Your job is to help users book rides by collecting all necessary information and then automatically processing the booking.
+
+CONVERSATION GUIDELINES:
+- If the user greets you (e.g., "Hi", "Hello", "Hey"), greet them back professionally and offer to help with booking a ride or questions about Lumi.
+- If the user asks about ride status, fare quotes, or other ride-related queries, handle them directly using the appropriate tools. DO NOT redirect these queries - they are valid Lumi-related questions.
+- If the user asks irrelevant questions (not related to ride booking or Lumi services), politely redirect them: "I'm here to help you book rides or answer questions about Lumi. How can I assist you with booking a ride today?" or "I specialize in ride booking and Lumi services. Would you like to book a ride or learn more about Lumi?"
+- Maintain a professional, friendly, and helpful tone at all times.
+- Stay focused on ride booking and Lumi-related topics.
 
 SMART BOOKING WORKFLOW:
 1. COLLECT INFORMATION: When a user wants to book a ride, intelligently extract from their messages:
@@ -545,8 +552,16 @@ SMART BOOKING WORKFLOW:
 
 6. CONFIRM BOOKING: Inform the user that their ride has been booked successfully, in a single concise message.
 
+CONVERSATION GUIDELINES:
+- If the user greets you (e.g., "Hi", "Hello", "Hey"), greet them back professionally and offer to help with booking a ride or questions about Lumi.
+- If the user asks about ride status, fare quotes, or other ride-related queries, handle them directly using the appropriate tools. DO NOT redirect these queries - they are valid Lumi-related questions.
+- If the user asks irrelevant questions (not related to ride booking or Lumi services), politely redirect them: "I'm here to help you book rides or answer questions about Lumi. How can I assist you with booking a ride today?" or "I specialize in ride booking and Lumi services. Would you like to book a ride or learn more about Lumi?"
+- Maintain a professional, friendly, and helpful tone at all times.
+- Stay focused on ride booking and Lumi-related topics.
+
 CRITICAL RULES:
 - Be intelligent and natural in conversation - extract information from user messages without being robotic.
+- **FARE QUERIES (HIGHEST PRIORITY)**: When user asks about fare (e.g., "what is the fare from X to Y", "fare for going from X to Y", "what is the fare for going to X to Y"), IMMEDIATELY extract the pickup and dropoff locations from their message and call get_fare_for_locations directly. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT send status messages like "I'll check" or "Let me get" - just call the tool immediately with the locations the user provided.
 - If user provides complete information in one message (e.g., "I want to go from X to Y on Lumi GO"), extract all details and ask for confirmation: "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" DO NOT send intermediate status messages like "I will proceed with booking", "Let's confirm your booking", "Please hold on", or "I'll finalize this for you". Just ask for confirmation directly.
 - If user provides locations (even if ambiguous like "E11" or "H13"), proceed with book_ride_with_details - DO NOT call request_map_selection. The system will handle location resolution and ask for city names if needed.
 - If information is missing, ask for it naturally (e.g., "Which ride type would you like?" or "Where would you like to go?").
@@ -554,13 +569,17 @@ CRITICAL RULES:
 - DO NOT call request_map_selection unless the user explicitly asks to use a map or location resolution has completely failed after asking for city names.
 - ALWAYS ask for confirmation before booking. When you have all three details (pickup, dropoff, ride_type), ask the user for confirmation with a natural question like "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" After the user confirms (yes, okay, proceed, book it, etc.), THEN call book_ride_with_details. Wait for the tool result and then reply with a single final confirmation message.
 - NEVER say "I will now proceed to book", "I'll proceed to", "I'll go ahead and", "I'll book now", "Let's confirm your booking", "Please hold on", "I'll finalize this for you", or any other intermediate status messages. Just ask for confirmation directly.
-- FORMATTING: Always use HTML tags for formatting (e.g., <p>, <b>, <ul>, <li>) instead of markdown asterisks. Use <b> for bold, <p> for paragraphs, <ul> and <li> for lists. Never use **bold** or *italic* markdown syntax.
+- FORMATTING: Never use HTML tags, asterisks, or markdown formatting. Use plain text only. For lists, use numbered format: 1) First item 2) Second item 3) Third item. Do not use <p>, <b>, <ul>, <li>, **bold**, *italic*, or any other formatting tags or symbols.
 - NEVER use regex patterns or hardcoded logic - use your intelligence to understand user intent.
 - NEVER guess coordinates - use tools (through book_ride_with_details or resolve_place_to_coordinates) to get them.
 - **NEVER guess or assume ride types - ALWAYS call list_ride_types to get the actual list from the API. If user says "Lumi Pink" or any ride type, call list_ride_types immediately to validate and show available options.**
 - NEVER hallucinate ride types, fares, or driver names - use actual API data.
-- **CRITICAL ERROR HANDLING**: When a tool returns {"ok": False, "error": "..."}, ALWAYS report the exact error message to the user in plain language. NEVER say the booking was successful if there's an error. NEVER make up success messages when tools fail. If there's an error, tell the user what went wrong clearly and concisely.
-- **ROUTE NOT FOUND HANDLING**: If you get an error with "ROUTE_NOT_FOUND" or "Could not find a route", this means the location names are too ambiguous. In this case, politely ask the user to provide the city names for both locations. Do NOT give examples like "E11 Islamabad" - just ask for the city names. Once the user provides the updated locations with city names, retry the booking process by calling book_ride_with_details again with the updated location names.
+- **CRITICAL ERROR HANDLING**: When a tool returns {"ok": False, "error": "..."}, ALWAYS report the exact error message to the user in ONE concise line. Error messages are already user-friendly and concise - just pass them through. NEVER say the booking was successful if there's an error. NEVER make up success messages when tools fail.
+- **ROUTE NOT FOUND HANDLING**: If you get an error with "ROUTE_NOT_FOUND" or "Route not found", politely ask the user to provide the city names for both locations. Do NOT give examples. Once the user provides the updated locations with city names, retry the booking process by calling book_ride_with_details again with the updated location names.
+- **STANDALONE API QUERIES**: You can query APIs directly without going through the booking workflow:
+  - **FARE QUERIES (CRITICAL)**: When user asks about fare (e.g., "what is the fare from X to Y", "cheapest fare from X to Y", "fare for going from X to Y", "what is the fare for going to X to Y"), IMMEDIATELY call get_fare_for_locations with the pickup and dropoff locations. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT say "I'll check" or "Let me get" - just call the tool directly. This tool automatically resolves locations using Google Maps API (just like booking workflow), calculates distance/duration, and returns fare quotes. The tool handles everything - location resolution, distance calculation, and fare retrieval.
+  - **RIDE STATUS QUERIES**: When user asks about their ride status (e.g., "is there any ride booking of mine", "give me ride status", "is my ride booked", "do I have an active ride", "check my ride status", "any active ride"), IMMEDIATELY call check_active_ride. This checks for active/ongoing rides without requiring ride ID. DO NOT redirect or ask about booking - just call the tool directly.
+  - These tools work independently and don't require the full booking workflow or LangGraph.
 - Keep responses friendly, concise, and helpful, ideally confirming the booking in one message once it's done.
 - The book_ride_with_details tool handles everything automatically - you just need to collect the info and call it IMMEDIATELY.
 """
@@ -689,6 +708,23 @@ tools = [
         "type":"object",
         "properties":{}
       }
+  }},
+  { "type":"function", "function": {
+      "name":"get_fare_for_locations",
+      "description":"CRITICAL: Get fare quote for specific pickup and dropoff locations. Use this IMMEDIATELY when user asks about fare in ANY format (e.g., 'what is the fare from X to Y', 'fare for going from X to Y', 'fare for going to X to Y', 'what is the fare for going to X to Y', 'cheapest fare from X to Y'). Extract pickup and dropoff locations from the user's message and call this tool DIRECTLY. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT say 'I'll check' or 'Let me get' - just call the tool immediately. This tool automatically resolves locations using Google Maps API (same as booking workflow), calculates distance/duration, and returns fare quotes for all ride types. This is a standalone API query that works independently without setting trip core.",
+      "parameters":{
+        "type":"object",
+        "properties":{
+          "pickup_place":{"type":"string","description":"Pickup location extracted from user's message (e.g., 'F7 Markaz Islamabad', 'Jameel Sweets, E-11, Islamabad'). Use the exact location name the user provided."},
+          "dropoff_place":{"type":"string","description":"Dropoff location extracted from user's message (e.g., 'F6 Markaz Islamabad', 'NSTP, H-12, Islamabad'). Use the exact location name the user provided."}
+        },
+        "required":["pickup_place","dropoff_place"]
+      }
+  }},
+  { "type":"function", "function": {
+      "name":"check_active_ride",
+      "description":"Check if the user has an active or ongoing ride. Use this when user asks 'is my ride booked', 'do I have an active ride', 'check my ride status', or similar questions. Returns the active ride details if one exists, or indicates no active ride.",
+      "parameters":{"type":"object","properties":{}}
   }},
   { "type":"function", "function": {
       "name":"create_ride_and_wait_for_bids",
@@ -861,20 +897,20 @@ def _normalize_ride_type_name(name: str) -> str:
 
 def _extract_user_friendly_error(api_response: dict, status_code: int = None) -> str:
     """
-    Extract a user-friendly error message from API response.
+    Extract a concise, one-line user-friendly error message from API response.
     Handles various error response formats and status codes.
     """
     if not api_response:
         if status_code == 409:
-            return "You already have an active ride request. Please wait for it to complete or cancel it before booking a new ride."
+            return "You already have an active ride request. Cancel it first or wait for it to complete."
         elif status_code == 400:
-            return "Invalid request. Please check your booking details and try again."
+            return "Invalid request. Please check your booking details."
         elif status_code == 401:
             return "Authentication failed. Please log in again."
         elif status_code == 403:
-            return "You don't have permission to perform this action."
+            return "Permission denied."
         elif status_code == 404:
-            return "The requested resource was not found."
+            return "Resource not found."
         elif status_code == 500:
             return "Server error. Please try again later."
         else:
@@ -913,9 +949,9 @@ def _extract_user_friendly_error(api_response: dict, status_code: int = None) ->
     
     # Fallback to status code based messages
     if status_code == 409:
-        return "You already have an active ride request. Please wait for it to complete or cancel it before booking a new ride."
+        return "You already have an active ride request. Cancel it first or wait for it to complete."
     elif status_code == 400:
-        return "Invalid request. Please check your booking details and try again."
+        return "Invalid request. Please check your booking details."
     elif status_code == 401:
         return "Authentication failed. Please log in again."
     elif status_code == 403:
@@ -1335,9 +1371,8 @@ async def tool_get_fare_quote():
             dropoff_addr = STATE.get("destination_address", "dropoff location")
             return {
                 "ok": False,
-                "error": f"ROUTE_NOT_FOUND: Could not find a route between {pickup_addr} and {dropoff_addr}. The location names might be ambiguous. Please provide the city names for both locations.",
+                "error": f"Route not found. Please provide city names for both locations.",
                 "error_type": "ROUTE_NOT_FOUND",
-                "suggestion": "Please provide city names for the locations.",
             }
         # Other ValueError
         print(f"⚠️ Google Maps calculation failed: {e}")
@@ -1445,6 +1480,161 @@ async def tool_get_fare_quote():
         "selected_ride_type_name": selected_ride_type_name,
         "selected_currency": STATE.get("currency"),
     }
+
+async def tool_get_fare_for_locations(pickup_place: str, dropoff_place: str):
+    """
+    Get fare quote for specific locations WITHOUT setting trip core.
+    This is a standalone API query for when user asks "what is the fare from X to Y".
+    """
+    try:
+        # Resolve locations to coordinates
+        pickup_result = await tool_resolve_place_to_coordinates(pickup_place)
+        if not pickup_result.get("ok"):
+            return {
+                "ok": False,
+                "error": pickup_result.get("error", "Failed to resolve pickup location."),
+            }
+        
+        dropoff_result = await tool_resolve_place_to_coordinates(dropoff_place)
+        if not dropoff_result.get("ok"):
+            return {
+                "ok": False,
+                "error": dropoff_result.get("error", "Failed to resolve dropoff location."),
+            }
+        
+        pickup_coords = {"lat": pickup_result["lat"], "lng": pickup_result["lng"]}
+        dropoff_coords = {"lat": dropoff_result["lat"], "lng": dropoff_result["lng"]}
+        
+        # Calculate distance/duration using Google Maps API
+        try:
+            from google_maps import calculate_distance_duration_google
+            google_result = await calculate_distance_duration_google(
+                pickup_coords,
+                dropoff_coords,
+                None
+            )
+            if not google_result.get("success", False):
+                return {
+                    "ok": False,
+                    "error": "Failed to calculate route distance.",
+                }
+            distance_km = google_result.get("distanceKm", 0.0)
+            duration_min = google_result.get("durationMin", 0.0)
+        except ValueError as e:
+            error_str = str(e)
+            if "ZERO_RESULTS" in error_str or "Invalid route status" in error_str:
+                return {
+                    "ok": False,
+                    "error": "Route not found. Please provide city names for both locations.",
+                    "error_type": "ROUTE_NOT_FOUND",
+                }
+            return {
+                "ok": False,
+                "error": "Failed to calculate route distance.",
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": "Failed to calculate route distance.",
+            }
+        
+        # Get fare quote
+        fare = get_fare(
+            pickup_coords,
+            dropoff_coords,
+            None,
+            distance_km=distance_km,
+            duration_min=duration_min,
+        )
+        if fare["status"] != 200:
+            error_msg = _extract_user_friendly_error(fare.get("data", {}), fare.get("status"))
+            return {
+                "ok": False,
+                "error": error_msg or "Failed to get fare quote.",
+            }
+        
+        # Format fare information
+        currency = _ensure_currency()
+        fare_data = fare.get("data", {})
+        ride_type_fares_raw = fare_data.get("rideTypeFares", [])
+        
+        # Deduplicate ride types
+        seen_ids = set()
+        ride_type_fares = []
+        for rt_fare in ride_type_fares_raw:
+            ride_type_id = rt_fare.get("ride_type_id")
+            if ride_type_id and ride_type_id not in seen_ids:
+                seen_ids.add(ride_type_id)
+                ride_type_fares.append(rt_fare)
+        
+        fare_list = []
+        for rt_fare in ride_type_fares:
+            fare_value = rt_fare.get("fare") or 0.0
+            fare_list.append({
+                "ride_type_name": rt_fare.get("name"),
+                "ride_type_id": rt_fare.get("ride_type_id"),
+                "fare": float(fare_value),
+                "currency": currency.get("code", "PKR"),
+                "currencySymbol": currency.get("symbol", "PKR"),
+            })
+        
+        # Find cheapest fare
+        cheapest = None
+        cheapest_fare = float('inf')
+        for item in fare_list:
+            if item["fare"] < cheapest_fare:
+                cheapest_fare = item["fare"]
+                cheapest = item
+        
+        return {
+            "ok": True,
+            "distance_km": distance_km,
+            "duration_min": duration_min,
+            "ride_type_fares": fare_list,
+            "cheapest_fare": cheapest_fare if cheapest else None,
+            "cheapest_ride_type": cheapest["ride_type_name"] if cheapest else None,
+            "currency": currency.get("code", "PKR"),
+            "currencySymbol": currency.get("symbol", "PKR"),
+        }
+    except Exception as e:
+        print(f"⚠️ Error getting fare for locations: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "ok": False,
+            "error": "Failed to get fare quote.",
+        }
+
+def tool_check_active_ride():
+    """
+    Check if user has an active/ongoing ride.
+    Returns ride details if active ride exists, or indicates no active ride.
+    """
+    try:
+        from rides import active_ride_for_customer
+        result = active_ride_for_customer()
+        
+        if result["status"] == 200 and result.get("data"):
+            ride_data = result["data"]
+            if isinstance(ride_data, dict) and ride_data.get("id"):
+                return {
+                    "ok": True,
+                    "has_active_ride": True,
+                    "ride": ride_data,
+                    "rideId": ride_data.get("id"),
+                }
+        
+        return {
+            "ok": True,
+            "has_active_ride": False,
+            "message": "No active ride found.",
+        }
+    except Exception as e:
+        print(f"⚠️ Error checking active ride: {e}")
+        return {
+            "ok": False,
+            "error": "Failed to check ride status.",
+        }
 
 async def tool_create_ride_and_wait_for_bids(payment_via=None, is_scheduled=False, scheduled_at=None, offered_fair=0, is_family=False):
     """
@@ -1598,7 +1788,7 @@ async def tool_create_ride_and_wait_for_bids(payment_via=None, is_scheduled=Fals
         _remember_customer_id_from_bid(best_bid)
     
     # Format best bid
-    driver = (best_bid.get("rider") or best_bid.get("driver") or {})
+    driver = best_bid.get("rider") or best_bid.get("driver") or {}
     user_profile = driver.get("userProfile", {})
     user = user_profile.get("user", {})
     driver_name = user.get("name") or "Unknown driver"
@@ -1619,7 +1809,7 @@ async def tool_create_ride_and_wait_for_bids(payment_via=None, is_scheduled=Fals
             "etaSeconds": best_bid.get("etaSeconds") or best_bid.get("eta") or best_bid.get("estimatedArrivalSeconds"),
         },
         "all_bids_count": len(STATE["last_bids"]),
-        "message": f"<p>I found a bid from <b>{driver_name}</b> at {amount_str}.</p>",
+        "message": f"I found a bid from {driver_name} at {amount_str}.",
         "instruction": "Use best_bid.price and best_bid.driverName from this response when presenting the bid to the user. Do NOT make up values.",
     }
 
@@ -1784,9 +1974,9 @@ def tool_wait_for_bids(timeout_seconds: int = 30, poll_interval: int = 4):
     if not best_bid:
         best_bid = STATE["last_bids"][0]
         _remember_customer_id_from_bid(best_bid)
-
-    # Format best bid
-    driver = (best_bid.get("rider") or best_bid.get("driver") or {})
+    driver = best_bid.get("rider") or best_bid.get("driver") or {}
+    user_profile = driver.get("userProfile", {})
+    user = user_profile.get("user", {})
     user_profile = driver.get("userProfile", {})
     user = user_profile.get("user", {})
     driver_name = user.get("name") or "Unknown driver"
@@ -1825,7 +2015,7 @@ def tool_wait_for_bids(timeout_seconds: int = 30, poll_interval: int = 4):
         },
         "all_bids": slim,
         "all_bids_count": len(STATE["last_bids"]),
-        "message": f"<p>Current best bid: <b>{driver_name}</b> at {amount_str}.</p>",
+        "message": f"Current best bid: {driver_name} at {amount_str}.",
         "instruction": "Use best_bid.price and best_bid.driverName from this response when presenting the bid to the user. Do NOT make up values.",
     }
 
@@ -1897,9 +2087,9 @@ def tool_accept_bid_choice(choice_index: int = None, driver_name: str = None):
 
     if ok:
         amount_str = _format_price(price if isinstance(price, (int, float)) else 0.0)
-        msg = f"<p>Your ride has been created with <b>{driver_name_final}</b> at {amount_str}. Your driver is on the way.</p>"
+        msg = f"Your ride has been created with {driver_name_final} at {amount_str}. Your driver is on the way."
     else:
-        msg = f"<p>Failed to accept the bid from <b>{driver_name_final}</b>. Status: {base.get('status')}.</p>"
+        msg = f"Failed to accept the bid from {driver_name_final}. Status: {base.get('status')}."
 
     return {
         "ok": ok,
@@ -2035,7 +2225,7 @@ async def tool_auto_book_ride(payment_via=None, is_scheduled=False, scheduled_at
     amount_str = _format_price(price)
     return {
         "ok": True,
-        "message": f"<p>Your ride has been booked with <b>{driver_name}</b> at {amount_str}. Your driver is on the way.</p>",
+        "message": f"Your ride has been booked with {driver_name} at {amount_str}. Your driver is on the way.",
         "rideId": ride_id,
         "driverName": driver_name,
         "price": price,
@@ -2124,6 +2314,17 @@ def call_tool(name, args):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         return loop.run_until_complete(tool_get_fare_quote())
+    if name == "get_fare_for_locations":
+        # Handle async function
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop.run_until_complete(tool_get_fare_for_locations(**args))
+    if name == "check_active_ride":
+        return tool_check_active_ride()
     if name == "create_ride_and_wait_for_bids":
         # Handle async function
         import asyncio
@@ -2155,7 +2356,7 @@ def chat_loop():
 
     messages = [
         {"role": "system", "content": SYSTEM},
-        {"role": "assistant", "content": "<p>Hi! I am <b>LumiDrive</b>, your autonomous ride-booking assistant. Tell me where you want to go and which ride type you prefer, and I will book your ride.</p>"}
+        {"role": "assistant", "content": "Hi! I am LumiDrive, your autonomous ride-booking assistant. Tell me where you want to go and which ride type you prefer, and I will book your ride."}
     ]
     print("LumiDrive ready. (Ctrl+C to exit)\n")
 
