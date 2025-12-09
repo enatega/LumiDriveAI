@@ -514,6 +514,7 @@ SMART BOOKING WORKFLOW:
      * When user mentions a ride type (e.g., "Lumi GO", "Lumi Pink", "Courier") - call it IMMEDIATELY to validate
      * When asking user to select a ride type - call it FIRST to show available options
      * Before calling set_ride_type or book_ride_with_details with a ride_type parameter
+   - **IMPORTANT**: When user asks for "all ride types with their fares" or "ride types with fares" or similar queries asking for fares, DO NOT call list_ride_types. Instead, call get_fare_for_locations which returns all ride types WITH their fares. The get_fare_for_locations tool returns fares for all available ride types automatically.
    - Use the actual ride types from the API - NEVER guess or assume ride type names
    - If user mentions a ride type that matches (e.g., "Lumi Pink" matches "LUMI_PINK"), summarize the booking details and ask for confirmation: "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" After user confirms, THEN call book_ride_with_details.
    - If user mentions a ride type that doesn't match exactly, try to match it intelligently (e.g., "Lumi GO" matches "LUMI_GO")
@@ -561,7 +562,8 @@ CONVERSATION GUIDELINES:
 
 CRITICAL RULES:
 - Be intelligent and natural in conversation - extract information from user messages without being robotic.
-- **FARE QUERIES (HIGHEST PRIORITY)**: When user asks about fare (e.g., "what is the fare from X to Y", "fare for going from X to Y", "what is the fare for going to X to Y"), IMMEDIATELY extract the pickup and dropoff locations from their message and call get_fare_for_locations directly. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT send status messages like "I'll check" or "Let me get" - just call the tool immediately with the locations the user provided.
+- **FARE QUERIES (HIGHEST PRIORITY)**: When user asks about fare (e.g., "what is the fare from X to Y", "fare for going from X to Y", "what is the fare for going to X to Y", "give me fares", "all ride types with their fare", "ride types with fares"), IMMEDIATELY extract the pickup and dropoff locations. If locations are in the current message, use them. If not, check previous messages in the conversation for locations that were mentioned (e.g., "Jameel Sweets, E-11 to NSTP, H-12"). Then call get_fare_for_locations directly with those locations. The get_fare_for_locations tool returns fares for ALL ride types automatically - DO NOT call list_ride_types separately. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT send status messages like "I'll check" or "Let me get" - just call the tool immediately.
+- **BOOKING WITH FARE REQUEST**: When user asks to book a ride AND also asks for fare in the same message (e.g., "Book lumi diamond, also give me fare"), first try to get the fare using get_fare_for_locations. If fare retrieval fails (e.g., 502 error, service unavailable), still proceed with booking if the user wants to book. Do not block booking due to fare retrieval failures - booking can proceed without fare quote.
 - If user provides complete information in one message (e.g., "I want to go from X to Y on Lumi GO"), extract all details and ask for confirmation: "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" DO NOT send intermediate status messages like "I will proceed with booking", "Let's confirm your booking", "Please hold on", or "I'll finalize this for you". Just ask for confirmation directly.
 - If user provides locations (even if ambiguous like "E11" or "H13"), proceed with book_ride_with_details - DO NOT call request_map_selection. The system will handle location resolution and ask for city names if needed.
 - If information is missing, ask for it naturally (e.g., "Which ride type would you like?" or "Where would you like to go?").
@@ -577,8 +579,9 @@ CRITICAL RULES:
 - **CRITICAL ERROR HANDLING**: When a tool returns {"ok": False, "error": "..."}, ALWAYS report the exact error message to the user in ONE concise line. Error messages are already user-friendly and concise - just pass them through. NEVER say the booking was successful if there's an error. NEVER make up success messages when tools fail.
 - **ROUTE NOT FOUND HANDLING**: If you get an error with "ROUTE_NOT_FOUND" or "Route not found", politely ask the user to provide the city names for both locations. Do NOT give examples. Once the user provides the updated locations with city names, retry the booking process by calling book_ride_with_details again with the updated location names.
 - **STANDALONE API QUERIES**: You can query APIs directly without going through the booking workflow:
-  - **FARE QUERIES (CRITICAL)**: When user asks about fare (e.g., "what is the fare from X to Y", "cheapest fare from X to Y", "fare for going from X to Y", "what is the fare for going to X to Y"), IMMEDIATELY call get_fare_for_locations with the pickup and dropoff locations. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT say "I'll check" or "Let me get" - just call the tool directly. This tool automatically resolves locations using Google Maps API (just like booking workflow), calculates distance/duration, and returns fare quotes. The tool handles everything - location resolution, distance calculation, and fare retrieval.
+  - **FARE QUERIES (CRITICAL)**: When user asks about fare (e.g., "what is the fare from X to Y", "cheapest fare from X to Y", "fare for going from X to Y", "what is the fare for going to X to Y", "give me fares", "all ride types with their fare", "ride types with fares"), IMMEDIATELY call get_fare_for_locations with the pickup and dropoff locations. If locations are in the current message, use them. If not, check previous messages in the conversation for locations that were mentioned. The get_fare_for_locations tool returns fares for ALL ride types automatically - DO NOT call list_ride_types separately when user asks for fares. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT say "I'll check" or "Let me get" - just call the tool directly. This tool automatically resolves locations using Google Maps API (just like booking workflow), calculates distance/duration, and returns fare quotes for all ride types. The tool handles everything - location resolution, distance calculation, and fare retrieval.
   - **RIDE STATUS QUERIES**: When user asks about their ride status (e.g., "is there any ride booking of mine", "give me ride status", "is my ride booked", "do I have an active ride", "check my ride status", "any active ride"), IMMEDIATELY call check_active_ride. This checks for active/ongoing rides without requiring ride ID. DO NOT redirect or ask about booking - just call the tool directly.
+  - **BOOKING WITH FARE REQUEST**: When user asks to book a ride AND also asks for fare in the same message (e.g., "Book lumi diamond, also give me fare"), first try to get the fare using get_fare_for_locations. If fare retrieval fails (e.g., 502 error, service unavailable), still proceed with booking if the user wants to book. Do not block booking due to fare retrieval failures - booking can proceed without fare quote.
   - These tools work independently and don't require the full booking workflow or LangGraph.
 - Keep responses friendly, concise, and helpful, ideally confirming the booking in one message once it's done.
 - The book_ride_with_details tool handles everything automatically - you just need to collect the info and call it IMMEDIATELY.
@@ -1547,6 +1550,13 @@ async def tool_get_fare_for_locations(pickup_place: str, dropoff_place: str):
             duration_min=duration_min,
         )
         if fare["status"] != 200:
+            # Handle 502 Bad Gateway and other server errors
+            if fare["status"] == 502:
+                return {
+                    "ok": False,
+                    "error": "Fare service temporarily unavailable. Please try again in a moment.",
+                    "error_type": "SERVICE_UNAVAILABLE",
+                }
             error_msg = _extract_user_friendly_error(fare.get("data", {}), fare.get("status"))
             return {
                 "ok": False,
