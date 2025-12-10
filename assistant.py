@@ -536,11 +536,16 @@ SMART BOOKING WORKFLOW:
    - ALWAYS ask for confirmation before booking, regardless of whether information is provided in one message or multiple messages.
    - When you have ALL three pieces of information (pickup, dropoff, ride_type), ask the user for confirmation with a natural question like "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?"
    - DO NOT send intermediate status messages like "I will proceed with booking", "Let's confirm your booking", "Please hold on", or "I'll finalize this for you". Just ask for confirmation directly.
-   - After the user confirms (says "yes", "okay", "proceed", "book it", etc.), THEN call book_ride_with_details.
+   - **CRITICAL - LOCATION PRESERVATION**: When the user confirms (says "yes", "okay", "proceed", "book it", etc.), you MUST look back at the conversation history to find the EXACT COMPLETE location strings from the user's original booking request. DO NOT extract or parse locations - COPY the exact strings from the conversation. For example:
+     * If user originally said "Book a mini ride from Jamil Sweets, E-11 to nstp, H-12", then when they confirm, you MUST use pickup_place="Jamil Sweets, E-11" (NOT "E-11") and dropoff_place="nstp, H-12" (NOT "nstp" or "NSTP")
+     * If user originally said "from Islamabad F7 Markaz to Islamabad F6 Markaz", use pickup_place="Islamabad F7 Markaz" (NOT "F7 Markaz") and dropoff_place="Islamabad F6 Markaz" (NOT "F6 Markaz")
+     * ALWAYS look back at the conversation history to find the original location strings - do NOT shorten or modify them
+     * The location strings should include everything the user mentioned (landmarks, area codes, city names, etc.)
+   - After the user confirms, THEN call book_ride_with_details with the COMPLETE location strings.
    Call book_ride_with_details with:
-   - pickup_place: The pickup location (place name or coordinates)
-   - dropoff_place: The dropoff location (place name, address, or coordinates)
-   - ride_type: The selected ride type name
+   - pickup_place: The EXACT COMPLETE pickup location string from the user's original message (e.g., "Jamil Sweets, E-11" NOT "E-11", "Islamabad F7 Markaz" NOT "F7 Markaz"). Copy the exact string from the conversation.
+   - dropoff_place: The EXACT COMPLETE dropoff location string from the user's original message (e.g., "NSTP, H-12" NOT "NSTP", "Islamabad F6 Markaz" NOT "F6 Markaz"). Copy the exact string from the conversation.
+   - ride_type: The selected ride type name (validated via list_ride_types)
    
    This tool will automatically:
    - Resolve locations to coordinates if needed
@@ -569,7 +574,7 @@ CRITICAL RULES:
 - If information is missing, ask for it naturally (e.g., "Which ride type would you like?" or "Where would you like to go?").
 - **MANDATORY: When user mentions ANY ride type OR when you need to ask for ride type, you MUST call list_ride_types FIRST. Do this BEFORE responding to the user. Never mention ride types without first calling list_ride_types to get the actual available options from the API.**
 - DO NOT call request_map_selection unless the user explicitly asks to use a map or location resolution has completely failed after asking for city names.
-- ALWAYS ask for confirmation before booking. When you have all three details (pickup, dropoff, ride_type), ask the user for confirmation with a natural question like "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" After the user confirms (yes, okay, proceed, book it, etc.), THEN call book_ride_with_details. Wait for the tool result and then reply with a single final confirmation message.
+- ALWAYS ask for confirmation before booking. When you have all three details (pickup, dropoff, ride_type), ask the user for confirmation with a natural question like "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" After the user confirms (yes, okay, proceed, book it, etc.), THEN call book_ride_with_details. CRITICAL: When calling book_ride_with_details, you MUST use the EXACT COMPLETE location strings from the user's original message. For example, if user said "Book a mini ride from Jamil Sweets, E-11 to nstp, H-12", you MUST use pickup_place="Jamil Sweets, E-11" (NOT "E-11") and dropoff_place="nstp, H-12" (NOT "NSTP" or "H-12"). Copy the exact strings from the conversation - do NOT shorten or modify them. Wait for the tool result and then reply with a single final confirmation message.
 - NEVER say "I will now proceed to book", "I'll proceed to", "I'll go ahead and", "I'll book now", "Let's confirm your booking", "Please hold on", "I'll finalize this for you", or any other intermediate status messages. Just ask for confirmation directly.
 - FORMATTING: Never use HTML tags, asterisks, or markdown formatting. Use plain text only. For lists, use numbered format: 1) First item 2) Second item 3) Third item. Do not use <p>, <b>, <ul>, <li>, **bold**, *italic*, or any other formatting tags or symbols.
 - NEVER use regex patterns or hardcoded logic - use your intelligence to understand user intent.
@@ -676,7 +681,7 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"book_ride_with_details",
-      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (pickup location, dropoff location, and ride type), call this tool to automatically book the ride. IMPORTANT: Before calling this with a ride_type, FIRST call list_ride_types to validate the ride type exists. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have ALL three: pickup_place (or coordinates), dropoff_place (or coordinates), and ride_type (validated via list_ride_types). If any detail is missing, ask the user for it first.",
+      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (pickup location, dropoff location, and ride type), call this tool to automatically book the ride. IMPORTANT: Before calling this with a ride_type, FIRST call list_ride_types to validate the ride type exists. CRITICAL: Always use the COMPLETE location names from the conversation (e.g., 'Jamil Sweets, E-11' NOT just 'E-11', 'NSTP, H-12' NOT just 'NSTP'). Preserve the full location strings as mentioned by the user. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have ALL three: pickup_place (complete location name or coordinates), dropoff_place (complete location name or coordinates), and ride_type (validated via list_ride_types). If any detail is missing, ask the user for it first.",
       "parameters":{
         "type":"object",
         "properties":{
@@ -971,8 +976,6 @@ async def tool_resolve_place_to_coordinates(place_name: str):
     Resolve a place name to coordinates using Google Maps Places API.
     Returns coordinates and formatted address.
     """
-    import re
-    
     if not place_name or len(place_name.strip()) < 2:
         return {
             "ok": False,
@@ -1075,73 +1078,13 @@ def tool_request_map_selection(message: str = None):
 
 def _parse_locations_from_message(message: str):
     """
-    Parse pickup and dropoff locations from user message.
-    Handles formats like:
-    - "Pickup: Address (lat, lng), Dropoff: Address (lat, lng)"
-    - "Selected locations: Pickup: ... (lat, lng), Dropoff: ... (lat, lng)"
+    DEPRECATED: This function used regex-based parsing which is not scalable.
+    The assistant now handles location extraction dynamically using natural language understanding.
+    This function is kept for backward compatibility but returns None.
+    The assistant should extract coordinates intelligently before calling tools.
     """
-    import re
-    # Pattern to match coordinates in parentheses: (lat, lng)
-    coord_pattern = r'\(([+-]?\d+\.?\d*),\s*([+-]?\d+\.?\d*)\)'
-    
-    # Try to find pickup and dropoff patterns
-    pickup_match = re.search(r'pickup[:\s]+([^(]+?)(?:\(([+-]?\d+\.?\d*),\s*([+-]?\d+\.?\d*)\))?', message, re.IGNORECASE)
-    dropoff_match = re.search(r'dropoff[:\s]+([^(]+?)(?:\(([+-]?\d+\.?\d*),\s*([+-]?\d+\.?\d*)\))?', message, re.IGNORECASE)
-    
-    # Alternative: find all coordinate pairs and assume first is pickup, second is dropoff
-    all_coords = re.findall(coord_pattern, message)
-    
-    result = {}
-    
-    if pickup_match and dropoff_match:
-        pickup_addr = pickup_match.group(1).strip()
-        dropoff_addr = dropoff_match.group(1).strip()
-        
-        # Try to get coordinates from the match groups or from all_coords
-        if pickup_match.group(2) and pickup_match.group(3):
-            pickup_lat = float(pickup_match.group(2))
-            pickup_lng = float(pickup_match.group(3))
-        elif len(all_coords) >= 1:
-            pickup_lat = float(all_coords[0][0])
-            pickup_lng = float(all_coords[0][1])
-        else:
-            return None
-            
-        if dropoff_match.group(2) and dropoff_match.group(3):
-            dropoff_lat = float(dropoff_match.group(2))
-            dropoff_lng = float(dropoff_match.group(3))
-        elif len(all_coords) >= 2:
-            dropoff_lat = float(all_coords[1][0])
-            dropoff_lng = float(all_coords[1][1])
-        else:
-            return None
-        
-        result = {
-            "pickup": {"lat": pickup_lat, "lng": pickup_lng, "address": pickup_addr},
-            "dropoff": {"lat": dropoff_lat, "lng": dropoff_lng, "address": dropoff_addr},
-            "pickup_address": pickup_addr,
-            "destination_address": dropoff_addr,
-        }
-    elif len(all_coords) >= 2:
-        # Fallback: if we have at least 2 coordinate pairs, use them
-        pickup_lat = float(all_coords[0][0])
-        pickup_lng = float(all_coords[0][1])
-        dropoff_lat = float(all_coords[1][0])
-        dropoff_lng = float(all_coords[1][1])
-        
-        # Try to extract addresses
-        parts = re.split(r'pickup|dropoff', message, flags=re.IGNORECASE)
-        pickup_addr = parts[1].split('(')[0].strip() if len(parts) > 1 else "Pickup"
-        dropoff_addr = parts[2].split('(')[0].strip() if len(parts) > 2 else "Dropoff"
-        
-        result = {
-            "pickup": {"lat": pickup_lat, "lng": pickup_lng, "address": pickup_addr},
-            "dropoff": {"lat": dropoff_lat, "lng": dropoff_lng, "address": dropoff_addr},
-            "pickup_address": pickup_addr,
-            "destination_address": dropoff_addr,
-        }
-    
-    return result if result else None
+    # Return None - let the assistant handle extraction dynamically
+    return None
 
 async def tool_set_trip_core(pickup, dropoff, pickup_address=None, destination_address=None, rideTypeName=None):
     """
@@ -1987,8 +1930,6 @@ def tool_wait_for_bids(timeout_seconds: int = 30, poll_interval: int = 4):
     driver = best_bid.get("rider") or best_bid.get("driver") or {}
     user_profile = driver.get("userProfile", {})
     user = user_profile.get("user", {})
-    user_profile = driver.get("userProfile", {})
-    user = user_profile.get("user", {})
     driver_name = user.get("name") or "Unknown driver"
     price = best_bid.get("price") or best_bid.get("amount") or best_bid.get("fare")
 
@@ -2123,6 +2064,12 @@ async def tool_book_ride_with_details(
     AUTONOMOUS BOOKING: When all booking details are collected, this tool automatically books the ride.
     It uses the LangGraph workflow to process everything end-to-end.
     """
+    # Log the parameters being passed for debugging
+    print(f"[DEBUG] book_ride_with_details called with:")
+    print(f"  pickup_place: '{pickup_place}'")
+    print(f"  dropoff_place: '{dropoff_place}'")
+    print(f"  ride_type: '{ride_type}'")
+    
     try:
         from booking_workflow import process_booking_with_details
         result = await process_booking_with_details(
@@ -2246,13 +2193,12 @@ def tool_track_ride(rideId=None):
     """
     Get current ride details. Uses STATE['rideId'] if rideId is not provided or is invalid.
     """
-    import re
-    
-    # Validate rideId format (UUID)
-    uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+    # Simple validation: check if rideId looks like a UUID (basic check without regex)
+    ride_id_str = str(rideId) if rideId else ""
+    is_valid_uuid = ride_id_str and len(ride_id_str) == 36 and ride_id_str.count('-') == 4
     
     # If rideId is not provided, invalid, or is a placeholder, use STATE
-    if not rideId or not uuid_pattern.match(str(rideId)) or '<' in str(rideId) or '>' in str(rideId):
+    if not rideId or not is_valid_uuid or '<' in ride_id_str or '>' in ride_id_str:
         rideId = STATE.get("rideId")
         if not rideId:
             return {
@@ -2406,30 +2352,9 @@ def chat_loop():
             for tc in msg.tool_calls:
                 args = json.loads(tc.function.arguments or "{}")
 
-                # If set_trip_core is called without coordinates, try to parse from message
-                if tc.function.name == "set_trip_core" and (not args or "pickup" not in args or "dropoff" not in args):
-                    # Try to parse coordinates from user message
-                    parsed = _parse_locations_from_message(user)
-                    if parsed and parsed.get("pickup") and parsed.get("dropoff"):
-                        args = {
-                            "pickup": parsed["pickup"],
-                            "dropoff": parsed["dropoff"],
-                            "pickup_address": parsed.get("pickup_address"),
-                            "destination_address": parsed.get("destination_address"),
-                        }
-                    else:
-                        # If no coordinates found, return error - don't guess
-                        result = {
-                            "ok": False,
-                            "error": "Coordinates (lat, lng) are required. Please provide coordinates or use the map to select locations.",
-                        }
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "name": tc.function.name,
-                            "content": json.dumps(result),
-                        })
-                        continue
+                # If set_trip_core is called without coordinates, the assistant should have extracted
+                # the information intelligently. If coordinates are missing, let the tool handle the error.
+                # No regex parsing - assistant handles extraction dynamically.
 
                 try:
                     result = eval(f"tool_{tc.function.name}")(**args)

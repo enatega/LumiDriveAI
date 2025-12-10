@@ -26,7 +26,6 @@ from assistant import (
     _normalize_ride_type_name,
 )
 import json
-import re
 
 
 class BookingState(TypedDict):
@@ -44,78 +43,20 @@ class BookingState(TypedDict):
 
 def parse_booking_intent(state: BookingState) -> BookingState:
     """
-    Parse user message to extract pickup, dropoff, and ride type.
-    Handles patterns like:
-    - "from X to Y on Z"
-    - "X to Y, Z"
-    - "I want to book a ride from X to Y on Z"
-    - "I want to travel from X to Y on Z"
+    Parse booking intent from state.
+    Since the assistant already extracts all information intelligently,
+    we simply pass through the state if locations are already set.
+    Otherwise, we rely on the assistant to extract information before calling this workflow.
     """
-    messages = state.get("messages", [])
-    if not messages:
+    # If pickup_place and dropoff_place are already set (from process_booking_with_details),
+    # use the existing values - no parsing needed
+    if state.get("pickup_place") and state.get("dropoff_place"):
         return state
     
-    # Get the last user message
-    last_message = None
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            last_message = msg.content
-            break
-    
-    if not last_message:
-        return state
-    
-    # Normalize the message
-    normalized = last_message.strip()
-    
-    # Patterns to match (order matters - most specific first)
-    patterns = [
-        # "I want to book/travel from X to Y on Z"
-        r"(?:want to|wanna|need to)\s+(?:book|travel|go)\s+(?:a\s+)?(?:ride|trip)?\s*(?:from)?\s+([^,]+?)\s+(?:to|→)\s+([^,]+?)(?:\s+on\s+|\s*,\s*)([A-Z_\s]+)",
-        # "from X to Y on Z" or "from X to Y, Z"
-        r"(?:from|pickup|pick up)\s+([^,]+?)\s+(?:to|dropoff|drop off)\s+([^,]+?)(?:\s+on\s+|\s*,\s*)([A-Z_\s]+)",
-        # "X to Y on Z"
-        r"^([^,]+?)\s+to\s+([^,]+?)(?:\s+on\s+|\s*,\s*)([A-Z_\s]+)",
-    ]
-    
-    pickup = None
-    dropoff = None
-    ride_type = None
-    
-    for pattern in patterns:
-        match = re.search(pattern, normalized, re.IGNORECASE)
-        if match:
-            pickup = match.group(1).strip()
-            dropoff = match.group(2).strip()
-            ride_type = match.group(3).strip()
-            # Normalize ride type (remove extra spaces)
-            ride_type = re.sub(r'\s+', ' ', ride_type).strip()
-            break
-    
-    # If no pattern matched, try simpler extraction
-    if not pickup:
-        # Try "X to Y" pattern
-        simple_match = re.search(r"([^,]+?)\s+to\s+([^,]+)", normalized, re.IGNORECASE)
-        if simple_match:
-            pickup = simple_match.group(1).strip()
-            dropoff = simple_match.group(2).strip()
-            # Try to find ride type elsewhere in message
-            ride_type_patterns = [
-                r"(?:on|using|with|ride type|type)\s+([A-Z_]+(?:\s+[A-Z_]+)?)",
-                r"(Lumi\s+GO|LUMI\s+GO|LUMI_GO)",
-            ]
-            for rt_pattern in ride_type_patterns:
-                ride_type_match = re.search(rt_pattern, normalized, re.IGNORECASE)
-                if ride_type_match:
-                    ride_type = ride_type_match.group(1).strip()
-                    break
-    
-    return {
-        **state,
-        "pickup_place": pickup,
-        "dropoff_place": dropoff,
-        "ride_type": ride_type,
-    }
+    # If locations are not set, this workflow expects the assistant to have extracted
+    # the information before calling process_booking_with_details.
+    # Return state as-is - the workflow will ask user for missing info if needed.
+    return state
 
 
 async def resolve_locations(state: BookingState) -> BookingState:

@@ -138,6 +138,10 @@ async def _run_tools_for_message(msg, messages: List[Dict[str, Any]], user_locat
                 result = tool_check_active_ride()
             elif tc.function.name == "book_ride_with_details":
                 from assistant import tool_book_ride_with_details
+                logger.info(f"DEBUG book_ride_with_details args:")
+                logger.info(f"  pickup_place: '{args.get('pickup_place', 'NOT PROVIDED')}'")
+                logger.info(f"  dropoff_place: '{args.get('dropoff_place', 'NOT PROVIDED')}'")
+                logger.info(f"  ride_type: '{args.get('ride_type', 'NOT PROVIDED')}'")
                 result = await tool_book_ride_with_details(**args)
             elif tc.function.name == "auto_book_ride":
                 from assistant import tool_auto_book_ride
