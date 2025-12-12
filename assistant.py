@@ -516,7 +516,8 @@ SMART BOOKING WORKFLOW:
      * Before calling set_ride_type or book_ride_with_details with a ride_type parameter
    - **IMPORTANT**: When user asks for "all ride types with their fares" or "ride types with fares" or similar queries asking for fares, DO NOT call list_ride_types. Instead, call get_fare_for_locations which returns all ride types WITH their fares. The get_fare_for_locations tool returns fares for all available ride types automatically.
    - Use the actual ride types from the API - NEVER guess or assume ride type names
-   - If user mentions a ride type that matches (e.g., "Lumi Pink" matches "LUMI_PINK"), summarize the booking details and ask for confirmation: "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" After user confirms, THEN call book_ride_with_details.
+   - **CRITICAL - NEVER USE INFORMATION FROM MEMORY**: NEVER use pickup, dropoff, or ride_type from previous conversations or conversation history. ONLY use information that is explicitly mentioned in the CURRENT user message. If the user provides only some details (e.g., only pickup and dropoff, or only ride type), you MUST ask for the missing details. DO NOT infer or recall information from previous messages.
+   - If user mentions a ride type that matches (e.g., "Lumi Pink" matches "LUMI_PINK") and you have all three details, ask for confirmation immediately.
    - If user mentions a ride type that doesn't match exactly, try to match it intelligently (e.g., "Lumi GO" matches "LUMI_GO")
    - If no match is found after calling list_ride_types, show the user the available ride types from the API response and ask them to choose
    - NEVER proceed with booking if the ride type doesn't match - always validate first with list_ride_types
@@ -528,20 +529,22 @@ SMART BOOKING WORKFLOW:
    - **IMPORTANT**: When user provides location names (even if ambiguous like "E11" or "H13"), ALWAYS proceed with book_ride_with_details. DO NOT call request_map_selection. The system will try to resolve the locations, and if it fails, it will ask the user for city names. Only use request_map_selection if the user explicitly asks for it or if location resolution has completely failed.
 
 4. ASK FOR MISSING INFO: If any detail is missing (pickup, dropoff, or ride type), politely ask the user for it. 
-   - **CRITICAL FOR RIDE TYPE**: When asking for ride type OR when user mentions a ride type, you MUST call list_ride_types FIRST before responding. NEVER guess ride types - always fetch them from the API.
+   - **CRITICAL FOR ALL DETAILS**: NEVER book a ride without ALL THREE details (pickup, dropoff, ride_type) in the CURRENT message. NEVER use pickup, dropoff, or ride_type from conversation history or previous conversations. ONLY use information that is explicitly mentioned in the CURRENT user message. If the user provides only some details (e.g., only pickup and dropoff, or only ride type, or only pickup), you MUST ask for the missing details. DO NOT infer or recall information from previous messages.
+   - **CRITICAL - WHEN USER PROVIDES LOCATIONS ONLY**: If the user provides pickup and dropoff locations but NO ride type, IMMEDIATELY call list_ride_types WITHOUT any intermediate messages like "Let me check", "Please hold on", "Checking", or "I'll check". After calling list_ride_types, immediately present the available ride types to the user and ask them to choose. DO NOT send status messages - just call the tool and present the results.
+   - When asking for ride type OR when user mentions a ride type, you MUST call list_ride_types FIRST before responding. NEVER guess ride types - always fetch them from the API.
    - After calling list_ride_types, present the actual available ride types from the API response to the user.
    - If user mentions a ride type that doesn't match, call list_ride_types to get the actual list and show it to them.
 
 5. BOOKING CONFIRMATION: 
    - ALWAYS ask for confirmation before booking, regardless of whether information is provided in one message or multiple messages.
-   - When you have ALL three pieces of information (pickup, dropoff, ride_type), ask the user for confirmation with a natural question like "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?"
-   - DO NOT send intermediate status messages like "I will proceed with booking", "Let's confirm your booking", "Please hold on", or "I'll finalize this for you". Just ask for confirmation directly.
-   - **CRITICAL - LOCATION PRESERVATION**: When the user confirms (says "yes", "okay", "proceed", "book it", etc.), you MUST look back at the conversation history to find the EXACT COMPLETE location strings from the user's original booking request. DO NOT extract or parse locations - COPY the exact strings from the conversation. For example:
-     * If user originally said "Book a mini ride from Jamil Sweets, E-11 to nstp, H-12", then when they confirm, you MUST use pickup_place="Jamil Sweets, E-11" (NOT "E-11") and dropoff_place="nstp, H-12" (NOT "nstp" or "NSTP")
-     * If user originally said "from Islamabad F7 Markaz to Islamabad F6 Markaz", use pickup_place="Islamabad F7 Markaz" (NOT "F7 Markaz") and dropoff_place="Islamabad F6 Markaz" (NOT "F6 Markaz")
-     * ALWAYS look back at the conversation history to find the original location strings - do NOT shorten or modify them
-     * The location strings should include everything the user mentioned (landmarks, area codes, city names, etc.)
-   - After the user confirms, THEN call book_ride_with_details with the COMPLETE location strings.
+   - **CRITICAL**: When you have ALL three pieces of information (pickup, dropoff, ride_type), IMMEDIATELY ask the user for confirmation with a natural question like "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" DO NOT wait for the user to say "okay" or "yes" first - YOU must proactively ask for confirmation as soon as you have all three details.
+   - **CURRENT MESSAGE ONLY**: ONLY use information from the CURRENT user message. If the user provides all three details (pickup, dropoff, ride_type) in the current message, IMMEDIATELY ask for confirmation. If any detail is missing from the current message, ask for it. DO NOT check conversation history or previous messages for missing details.
+   - DO NOT send intermediate status messages like "I will proceed with booking", "Let's confirm your booking", "Please hold on", "I'll finalize this for you", "I'm proceeding to book", "I'll finalize the booking", "Let me check", "Checking", "I'll check", or "Please hold on". Just call tools directly and present results immediately.
+   - **CRITICAL - LOCATION PRESERVATION**: When calling book_ride_with_details, you MUST use the EXACT COMPLETE location strings from the CURRENT user message. DO NOT extract or parse locations - COPY the exact strings as mentioned in the current message. For example:
+     * If user said "Book a mini ride from Jamil Sweets, E-11 to nstp, H-12", use pickup_place="Jamil Sweets, E-11" (NOT "E-11") and dropoff_place="nstp, H-12" (NOT "nstp" or "NSTP")
+     * If user said "from Islamabad F7 Markaz to Islamabad F6 Markaz", use pickup_place="Islamabad F7 Markaz" (NOT "F7 Markaz") and dropoff_place="Islamabad F6 Markaz" (NOT "F6 Markaz")
+     * The location strings should include everything the user mentioned in the current message (landmarks, area codes, city names, etc.)
+   - After the user confirms, THEN call book_ride_with_details with the COMPLETE location strings from the current message.
    Call book_ride_with_details with:
    - pickup_place: The EXACT COMPLETE pickup location string from the user's original message (e.g., "Jamil Sweets, E-11" NOT "E-11", "Islamabad F7 Markaz" NOT "F7 Markaz"). Copy the exact string from the conversation.
    - dropoff_place: The EXACT COMPLETE dropoff location string from the user's original message (e.g., "NSTP, H-12" NOT "NSTP", "Islamabad F6 Markaz" NOT "F6 Markaz"). Copy the exact string from the conversation.
@@ -567,14 +570,14 @@ CONVERSATION GUIDELINES:
 
 CRITICAL RULES:
 - Be intelligent and natural in conversation - extract information from user messages without being robotic.
-- **FARE QUERIES (HIGHEST PRIORITY)**: When user asks about fare (e.g., "what is the fare from X to Y", "fare for going from X to Y", "what is the fare for going to X to Y", "give me fares", "all ride types with their fare", "ride types with fares"), IMMEDIATELY extract the pickup and dropoff locations. If locations are in the current message, use them. If not, check previous messages in the conversation for locations that were mentioned (e.g., "Jameel Sweets, E-11 to NSTP, H-12"). Then call get_fare_for_locations directly with those locations. The get_fare_for_locations tool returns fares for ALL ride types automatically - DO NOT call list_ride_types separately. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT send status messages like "I'll check" or "Let me get" - just call the tool immediately.
+- **FARE QUERIES (HIGHEST PRIORITY)**: When user asks about fare (e.g., "what is the fare from X to Y", "fare for going from X to Y", "what is the fare for going to X to Y", "give me fares", "all ride types with their fare", "ride types with fares"), IMMEDIATELY extract the pickup and dropoff locations from the CURRENT message. If locations are in the current message, use them. If not, ask the user for the pickup and dropoff locations. DO NOT check previous messages or conversation history. Then call get_fare_for_locations directly with those locations. The get_fare_for_locations tool returns fares for ALL ride types automatically - DO NOT call list_ride_types separately. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT send status messages like "I'll check" or "Let me get" - just call the tool immediately.
 - **BOOKING WITH FARE REQUEST**: When user asks to book a ride AND also asks for fare in the same message (e.g., "Book lumi diamond, also give me fare"), first try to get the fare using get_fare_for_locations. If fare retrieval fails (e.g., 502 error, service unavailable), still proceed with booking if the user wants to book. Do not block booking due to fare retrieval failures - booking can proceed without fare quote.
 - If user provides complete information in one message (e.g., "I want to go from X to Y on Lumi GO"), extract all details and ask for confirmation: "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" DO NOT send intermediate status messages like "I will proceed with booking", "Let's confirm your booking", "Please hold on", or "I'll finalize this for you". Just ask for confirmation directly.
 - If user provides locations (even if ambiguous like "E11" or "H13"), proceed with book_ride_with_details - DO NOT call request_map_selection. The system will handle location resolution and ask for city names if needed.
 - If information is missing, ask for it naturally (e.g., "Which ride type would you like?" or "Where would you like to go?").
-- **MANDATORY: When user mentions ANY ride type OR when you need to ask for ride type, you MUST call list_ride_types FIRST. Do this BEFORE responding to the user. Never mention ride types without first calling list_ride_types to get the actual available options from the API.**
+- **MANDATORY: When user mentions ANY ride type OR when you need to ask for ride type, you MUST call list_ride_types FIRST. Do this BEFORE responding to the user. Never mention ride types without first calling list_ride_types to get the actual available options from the API. When user provides locations but no ride type, IMMEDIATELY call list_ride_types WITHOUT any intermediate messages like "Let me check", "Please hold on", "Checking", or "I'll check". Just call the tool directly and present the results.**
 - DO NOT call request_map_selection unless the user explicitly asks to use a map or location resolution has completely failed after asking for city names.
-- ALWAYS ask for confirmation before booking. When you have all three details (pickup, dropoff, ride_type), ask the user for confirmation with a natural question like "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" After the user confirms (yes, okay, proceed, book it, etc.), THEN call book_ride_with_details. CRITICAL: When calling book_ride_with_details, you MUST use the EXACT COMPLETE location strings from the user's original message. For example, if user said "Book a mini ride from Jamil Sweets, E-11 to nstp, H-12", you MUST use pickup_place="Jamil Sweets, E-11" (NOT "E-11") and dropoff_place="nstp, H-12" (NOT "NSTP" or "H-12"). Copy the exact strings from the conversation - do NOT shorten or modify them. Wait for the tool result and then reply with a single final confirmation message.
+- ALWAYS ask for confirmation before booking. When you have all three details (pickup, dropoff, ride_type) in the CURRENT message, ask the user for confirmation with a natural question like "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" After the user confirms (yes, okay, proceed, book it, etc.), THEN call book_ride_with_details. CRITICAL: NEVER call book_ride_with_details without ALL THREE details (pickup, dropoff, ride_type) from the CURRENT message. NEVER use pickup, dropoff, or ride_type from conversation history or previous conversations - ONLY use information that is explicitly mentioned in the current user message. If the user provides only some details (e.g., only pickup and dropoff, or only ride type, or only pickup), you MUST ask for the missing details. DO NOT infer or recall information from previous messages. CRITICAL: When calling book_ride_with_details, you MUST use the EXACT COMPLETE location strings from the CURRENT user message. For example, if user said "Book a mini ride from Jamil Sweets, E-11 to nstp, H-12", you MUST use pickup_place="Jamil Sweets, E-11" (NOT "E-11") and dropoff_place="nstp, H-12" (NOT "NSTP" or "H-12"). Copy the exact strings from the conversation - do NOT shorten or modify them. Wait for the tool result and then reply with a single final confirmation message.
 - NEVER say "I will now proceed to book", "I'll proceed to", "I'll go ahead and", "I'll book now", "Let's confirm your booking", "Please hold on", "I'll finalize this for you", or any other intermediate status messages. Just ask for confirmation directly.
 - FORMATTING: Never use HTML tags, asterisks, or markdown formatting. Use plain text only. For lists, use numbered format: 1) First item 2) Second item 3) Third item. Do not use <p>, <b>, <ul>, <li>, **bold**, *italic*, or any other formatting tags or symbols.
 - NEVER use regex patterns or hardcoded logic - use your intelligence to understand user intent.
@@ -584,8 +587,8 @@ CRITICAL RULES:
 - **CRITICAL ERROR HANDLING**: When a tool returns {"ok": False, "error": "..."}, ALWAYS report the exact error message to the user in ONE concise line. Error messages are already user-friendly and concise - just pass them through. NEVER say the booking was successful if there's an error. NEVER make up success messages when tools fail.
 - **ROUTE NOT FOUND HANDLING**: If you get an error with "ROUTE_NOT_FOUND" or "Route not found", politely ask the user to provide the city names for both locations. Do NOT give examples. Once the user provides the updated locations with city names, retry the booking process by calling book_ride_with_details again with the updated location names.
 - **STANDALONE API QUERIES**: You can query APIs directly without going through the booking workflow:
-  - **FARE QUERIES (CRITICAL)**: When user asks about fare (e.g., "what is the fare from X to Y", "cheapest fare from X to Y", "fare for going from X to Y", "what is the fare for going to X to Y", "give me fares", "all ride types with their fare", "ride types with fares"), IMMEDIATELY call get_fare_for_locations with the pickup and dropoff locations. If locations are in the current message, use them. If not, check previous messages in the conversation for locations that were mentioned. The get_fare_for_locations tool returns fares for ALL ride types automatically - DO NOT call list_ride_types separately when user asks for fares. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT say "I'll check" or "Let me get" - just call the tool directly. This tool automatically resolves locations using Google Maps API (just like booking workflow), calculates distance/duration, and returns fare quotes for all ride types. The tool handles everything - location resolution, distance calculation, and fare retrieval.
-  - **RIDE STATUS QUERIES**: When user asks about their ride status (e.g., "is there any ride booking of mine", "give me ride status", "is my ride booked", "do I have an active ride", "check my ride status", "any active ride"), IMMEDIATELY call check_active_ride. This checks for active/ongoing rides without requiring ride ID. DO NOT redirect or ask about booking - just call the tool directly.
+  - **FARE QUERIES (CRITICAL)**: When user asks about fare (e.g., "what is the fare from X to Y", "cheapest fare from X to Y", "fare for going from X to Y", "what is the fare for going to X to Y", "give me fares", "all ride types with their fare", "ride types with fares"), IMMEDIATELY call get_fare_for_locations with the pickup and dropoff locations from the CURRENT message. If locations are in the current message, use them. If not, ask the user for the pickup and dropoff locations. DO NOT check previous messages or conversation history. The get_fare_for_locations tool returns fares for ALL ride types automatically - DO NOT call list_ride_types separately when user asks for fares. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT say "I'll check" or "Let me get" - just call the tool directly. This tool automatically resolves locations using Google Maps API (just like booking workflow), calculates distance/duration, and returns fare quotes for all ride types. The tool handles everything - location resolution, distance calculation, and fare retrieval.
+  - **RIDE STATUS QUERIES**: When user asks about their ride status (e.g., "is there any ride booking of mine", "give me ride status", "is my ride booked", "do I have an active ride", "check my ride status", "any active ride", "what is my ride status"), IMMEDIATELY call check_active_ride. This checks for active/ongoing rides without requiring ride ID. DO NOT redirect or ask about booking - just call the tool directly. ALWAYS call check_active_ride API when user asks about ride status - never respond without calling the API.
   - **BOOKING WITH FARE REQUEST**: When user asks to book a ride AND also asks for fare in the same message (e.g., "Book lumi diamond, also give me fare"), first try to get the fare using get_fare_for_locations. If fare retrieval fails (e.g., 502 error, service unavailable), still proceed with booking if the user wants to book. Do not block booking due to fare retrieval failures - booking can proceed without fare quote.
   - These tools work independently and don't require the full booking workflow or LangGraph.
 - Keep responses friendly, concise, and helpful, ideally confirming the booking in one message once it's done.
@@ -681,7 +684,7 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"book_ride_with_details",
-      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (pickup location, dropoff location, and ride type), call this tool to automatically book the ride. IMPORTANT: Before calling this with a ride_type, FIRST call list_ride_types to validate the ride type exists. CRITICAL: Always use the COMPLETE location names from the conversation (e.g., 'Jamil Sweets, E-11' NOT just 'E-11', 'NSTP, H-12' NOT just 'NSTP'). Preserve the full location strings as mentioned by the user. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have ALL three: pickup_place (complete location name or coordinates), dropoff_place (complete location name or coordinates), and ride_type (validated via list_ride_types). If any detail is missing, ask the user for it first.",
+      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (pickup location, dropoff location, and ride type), call this tool to automatically book the ride. CRITICAL: You MUST have ALL THREE details before calling this tool: 1) pickup_place, 2) dropoff_place, 3) ride_type. If ride_type is missing, DO NOT call this tool - instead ask the user which ride type they want by calling list_ride_types first. IMPORTANT: Before calling this with a ride_type, FIRST call list_ride_types to validate the ride type exists. CRITICAL: Always use the COMPLETE location names from the conversation (e.g., 'Jamil Sweets, E-11' NOT just 'E-11', 'NSTP, H-12' NOT just 'NSTP'). Preserve the full location strings as mentioned by the user. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have ALL three: pickup_place (complete location name or coordinates), dropoff_place (complete location name or coordinates), and ride_type (validated via list_ride_types). If any detail is missing, ask the user for it first.",
       "parameters":{
         "type":"object",
         "properties":{
@@ -1569,12 +1572,51 @@ def tool_check_active_ride():
         
         if result["status"] == 200 and result.get("data"):
             ride_data = result["data"]
-            if isinstance(ride_data, dict) and ride_data.get("id"):
+            # Check for ride_id (API returns ride_id, not id)
+            ride_id = ride_data.get("ride_id") or ride_data.get("id")
+            # Also check if ride_status exists (indicates active ride)
+            ride_status = ride_data.get("ride_status")
+            
+            if isinstance(ride_data, dict) and (ride_id or ride_status):
+                # Format the response message
+                driver_name = "a driver"
+                pickup_address = ride_data.get("pickup_location") or "your pickup location"
+                dropoff_address = ride_data.get("dropoff_location") or "your destination"
+                ride_type_name = "your ride type"
+                fare = ride_data.get("agreed_price")
+                
+                # Extract driver name
+                driver = ride_data.get("driver", {})
+                if driver:
+                    user = driver.get("user", {})
+                    if user:
+                        driver_name = user.get("name", "a driver")
+                
+                # Extract ride type name
+                ride_type = ride_data.get("ride_type", {})
+                if ride_type:
+                    ride_type_name = ride_type.get("name", "your ride type")
+                
+                # Format fare
+                currency = _ensure_currency()
+                fare_str = _format_price(float(fare)) if fare else "an unknown amount"
+                
+                # Build message based on ride status
+                # Only say "driver is on the way" for ASSIGNED status, not for IN_PROGRESS or other statuses
+                status_message = ""
+                if ride_status == "ASSIGNED":
+                    status_message = " Your driver is on the way."
+                elif ride_status in ["IN_PROGRESS", "STARTED", "PICKED_UP"]:
+                    status_message = ""  # Don't say "on the way" for rides already in progress
+                
                 return {
                     "ok": True,
                     "has_active_ride": True,
-                    "ride": ride_data,
-                    "rideId": ride_data.get("id"),
+                    "active_ride": True,
+                    "message": f"Yes, you have an active {ride_type_name} ride from {pickup_address} to {dropoff_address} with {driver_name} for {fare_str}.{status_message}",
+                    "ride_details": ride_data,
+                    "rideId": ride_id,
+                    "ride_status": ride_status,
                 }
         
         return {
@@ -1584,6 +1626,8 @@ def tool_check_active_ride():
         }
     except Exception as e:
         print(f"⚠️ Error checking active ride: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             "ok": False,
             "error": "Failed to check ride status.",
@@ -1931,9 +1975,6 @@ def tool_wait_for_bids(timeout_seconds: int = 30, poll_interval: int = 4):
     user_profile = driver.get("userProfile", {})
     user = user_profile.get("user", {})
     driver_name = user.get("name") or "Unknown driver"
-    price = best_bid.get("price") or best_bid.get("amount") or best_bid.get("fare")
-
-    # Ensure price is a number, not None
     if price is None:
         price = 0.0
     amount_str = _format_price(float(price))
