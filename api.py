@@ -76,3 +76,56 @@ def get(path: str, params: dict | None = None, timeout: int = 25):
     except Exception:
         print(resp.text[:1000])
     return resp
+
+def get_user_current_location(timeout: int = 10) -> dict:
+    """
+    Fetch user's current location from rides backend API.
+    Uses the current TOKEN (set via set_token) for authentication.
+    
+    Returns:
+        {
+            "ok": bool,
+            "location": {"lat": float, "lng": float} | None,
+            "error": str | None
+        }
+    """
+    url = f"{BASE_URL}/api/v1/users/current-location"
+    headers = _auth_header()
+    
+    try:
+        resp = session.get(url, headers=headers, timeout=timeout)
+        if resp.status_code == 200:
+            data = resp.json()
+            location = data.get("location")
+            if location and "lat" in location and "lng" in location:
+                return {
+                    "ok": True,
+                    "location": {
+                        "lat": location["lat"],
+                        "lng": location["lng"],
+                    },
+                }
+            else:
+                return {
+                    "ok": False,
+                    "location": None,
+                    "error": "Invalid location data in response",
+                }
+        elif resp.status_code == 404:
+            return {
+                "ok": False,
+                "location": None,
+                "error": "Location not available",
+            }
+        else:
+            return {
+                "ok": False,
+                "location": None,
+                "error": f"Failed to fetch location: HTTP {resp.status_code}",
+            }
+    except Exception as e:
+        return {
+            "ok": False,
+            "location": None,
+            "error": f"Error fetching location: {str(e)}",
+        }

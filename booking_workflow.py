@@ -62,6 +62,38 @@ def parse_booking_intent(state: BookingState) -> BookingState:
     return state
 
 
+def _parse_coordinates(place_str: str) -> dict | None:
+    """
+    Parse coordinates from string formats like:
+    - "31.5204,74.3587" (lat,lng)
+    - "Coordinates (31.5204, 74.3587)"
+    - "(31.5204, 74.3587)"
+    Returns {"lat": float, "lng": float} or None if not coordinates
+    """
+    import re
+    
+    # Try to extract lat,lng from various formats
+    # Pattern: (lat, lng) or lat,lng
+    patterns = [
+        r"\(?\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)?",  # (lat, lng) or lat,lng
+        r"([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)",  # lat, lng
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, place_str)
+        if match:
+            try:
+                lat = float(match.group(1))
+                lng = float(match.group(2))
+                # Validate reasonable coordinate ranges
+                if -90 <= lat <= 90 and -180 <= lng <= 180:
+                    return {"lat": lat, "lng": lng}
+            except (ValueError, IndexError):
+                continue
+    
+    return None
+
+
 async def resolve_locations(state: BookingState) -> BookingState:
     """Resolve place names to coordinates using Google Maps API"""
     pickup_place = state.get("pickup_place")
@@ -74,53 +106,88 @@ async def resolve_locations(state: BookingState) -> BookingState:
     error = None
     
     if pickup_place:
-        try:
-            result = await tool_resolve_place_to_coordinates(pickup_place)
-            if result.get("ok"):
-                pickup_coords = {
-                    "lat": result["lat"],
-                    "lng": result["lng"],
-                    "address": result["address"],
-                }
-            else:
-                error = f"Could not resolve pickup location: {result.get('error')}"
-        except Exception as e:
-            error = f"Error resolving pickup: {str(e)}"
+        # Check if pickup_place is already coordinates
+        coords = _parse_coordinates(pickup_place)
+        if coords:
+            # Already coordinates, use them directly
+            pickup_coords = {
+                "lat": coords["lat"],
+                "lng": coords["lng"],
+                "address": pickup_place,  # Use original string as address
+            }
+        else:
+            # Try to resolve as place name
+            try:
+                result = await tool_resolve_place_to_coordinates(pickup_place)
+                if result.get("ok"):
+                    pickup_coords = {
+                        "lat": result["lat"],
+                        "lng": result["lng"],
+                        "address": result["address"],
+                    }
+                else:
+                    error = f"Could not resolve pickup location: {result.get('error')}"
+            except Exception as e:
+                error = f"Error resolving pickup: {str(e)}"
     
     if dropoff_place and not error:
-        try:
-            result = await tool_resolve_place_to_coordinates(dropoff_place)
-            if result.get("ok"):
-                dropoff_coords = {
-                    "lat": result["lat"],
-                    "lng": result["lng"],
-                    "address": result["address"],
-                }
-            else:
-                error = f"Could not resolve dropoff location: {result.get('error')}"
-        except Exception as e:
-            error = f"Error resolving dropoff: {str(e)}"
+        # Check if dropoff_place is already coordinates
+        coords = _parse_coordinates(dropoff_place)
+        if coords:
+            # Already coordinates, use them directly
+            dropoff_coords = {
+                "lat": coords["lat"],
+                "lng": coords["lng"],
+                "address": dropoff_place,  # Use original string as address
+            }
+        else:
+            # Try to resolve as place name
+            try:
+                result = await tool_resolve_place_to_coordinates(dropoff_place)
+                if result.get("ok"):
+                    dropoff_coords = {
+                        "lat": result["lat"],
+                        "lng": result["lng"],
+                        "address": result["address"],
+                    }
+                else:
+                    error = f"Could not resolve dropoff location: {result.get('error')}"
+            except Exception as e:
+                error = f"Error resolving dropoff: {str(e)}"
     
     # Resolve stops if no error so far
     if stops and not error:
         for idx, stop_place in enumerate(stops):
             if not stop_place or not isinstance(stop_place, str):
                 continue
-            try:
-                result = await tool_resolve_place_to_coordinates(stop_place)
-                if result.get("ok"):
-                    stops_coords.append({
-                        "lat": result["lat"],
-                        "lng": result["lng"],
-                        "address": result.get("address", stop_place),
-                        "order": idx + 1,
-                    })
-                else:
-                    error = f"Could not resolve stop '{stop_place}': {result.get('error')}"
+            
+            # Check if stop_place is already coordinates
+            coords = _parse_coordinates(stop_place)
+            if coords:
+                # Already coordinates, use them directly
+                stops_coords.append({
+                    "lat": coords["lat"],
+                    "lng": coords["lng"],
+                    "address": stop_place,
+                    "order": idx + 1,
+                })
+            else:
+                # Try to resolve as place name
+                try:
+                    result = await tool_resolve_place_to_coordinates(stop_place)
+                    if result.get("ok"):
+                        stops_coords.append({
+                            "lat": result["lat"],
+                            "lng": result["lng"],
+                            "address": result.get("address", stop_place),
+                            "order": idx + 1,
+                        })
+                    else:
+                        error = f"Could not resolve stop '{stop_place}': {result.get('error')}"
+                        break
+                except Exception as e:
+                    error = f"Error resolving stop '{stop_place}': {str(e)}"
                     break
-            except Exception as e:
-                error = f"Error resolving stop '{stop_place}': {str(e)}"
-                break
     
     return {
         **state,

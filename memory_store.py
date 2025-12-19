@@ -1,7 +1,11 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import AIMessage, HumanMessage, SystemMessage, BaseMessage
+
+
+# Store current location separately since ConversationBufferMemory is a Pydantic model
+_MEMORY_LOCATIONS: Dict[str, Optional[Dict]] = {}
 
 
 _MEMORIES: Dict[str, ConversationBufferMemory] = {}
@@ -12,7 +16,18 @@ def get_memory(session_id: str) -> ConversationBufferMemory:
     if not memory:
         memory = ConversationBufferMemory(return_messages=True)
         _MEMORIES[session_id] = memory
+        _MEMORY_LOCATIONS[session_id] = None
     return memory
+
+
+def get_current_location(session_id: str) -> Optional[Dict]:
+    """Get current location for a session"""
+    return _MEMORY_LOCATIONS.get(session_id)
+
+
+def set_current_location(session_id: str, location: Optional[Dict]):
+    """Set current location for a session"""
+    _MEMORY_LOCATIONS[session_id] = location
 
 
 def bootstrap_memory_from_messages(memory: ConversationBufferMemory, messages: List[dict]):

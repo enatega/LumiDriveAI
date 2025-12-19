@@ -696,11 +696,11 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"book_ride_with_details",
-      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (pickup location, dropoff location, and ride type), call this tool to automatically book the ride. CRITICAL: You MUST have ALL THREE details before calling this tool: 1) pickup_place, 2) dropoff_place, 3) ride_type. If ride_type is missing, DO NOT call this tool - instead ask the user which ride type they want by calling list_ride_types first. IMPORTANT: Before calling this with a ride_type, FIRST call list_ride_types to validate the ride type exists. CRITICAL: Always use the COMPLETE location names from the conversation (e.g., 'Jamil Sweets, E-11' NOT just 'E-11', 'NSTP, H-12' NOT just 'NSTP'). Preserve the full location strings as mentioned by the user. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have ALL three: pickup_place (complete location name or coordinates), dropoff_place (complete location name or coordinates), and ride_type (validated via list_ride_types). If any detail is missing, ask the user for it first.",
+      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (dropoff location and ride type), call this tool to automatically book the ride. CRITICAL: You MUST have dropoff_place and ride_type before calling this tool. pickup_place is OPTIONAL - if not provided, the system will automatically use the user's current location (fetched from backend API). If ride_type is missing, DO NOT call this tool - instead ask the user which ride type they want by calling list_ride_types first. IMPORTANT: Before calling this with a ride_type, FIRST call list_ride_types to validate the ride type exists. CRITICAL: Always use the COMPLETE location names from the conversation (e.g., 'Jamil Sweets, E-11' NOT just 'E-11', 'NSTP, H-12' NOT just 'NSTP'). Preserve the full location strings as mentioned by the user. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have dropoff_place and ride_type. If pickup_place is not provided, current location will be used automatically.",
       "parameters":{
         "type":"object",
         "properties":{
-          "pickup_place":{"type":"string","description":"Pickup location as place name (e.g., 'F-6 Markaz, Islamabad') or coordinates (e.g., '33.6956,73.2205'). If coordinates are provided, they should be in 'lat,lng' format."},
+          "pickup_place":{"type":"string","description":"Pickup location as place name (e.g., 'F-6 Markaz, Islamabad') or coordinates in 'lat,lng' format (e.g., '33.6956,73.2205'). CRITICAL: If using coordinates, use ONLY 'lat,lng' format with no spaces or descriptive text like 'Coordinates (lat, lng)'. OPTIONAL: If not provided, user's current location will be used automatically."},
           "dropoff_place":{"type":"string","description":"Dropoff location as place name (e.g., 'E-11, Islamabad') or coordinates (e.g., '33.6992,72.9744'). If coordinates are provided, they should be in 'lat,lng' format."},
           "ride_type":{"type":"string","description":"Ride type name (e.g., 'LUMI_GO', 'Lumi GO', 'Courier', 'Bike', etc.)"},
           "stops":{"type":"array","items":{"type":"string"},"description":"Optional list of stop place names (e.g., ['F-6 Markaz, Islamabad', 'E-11, Islamabad']). Stops will be resolved to coordinates automatically."},
@@ -709,7 +709,7 @@ tools = [
           "scheduled_at":{"type":"string","description":"ISO8601 timestamp if is_scheduled is true (optional)"},
           "is_family":{"type":"boolean","description":"Whether this is a family ride (optional)"}
         },
-        "required":["pickup_place","dropoff_place","ride_type"]
+        "required":["dropoff_place","ride_type"]
       }
   }},
   { "type":"function", "function": {
@@ -826,6 +826,7 @@ STATE = {
   "pickup_location": None,
   "dropoff_location": None,
   "stops": [],
+  "current_location": None,  # User's current location from backend API
   "rideTypeName": None,
   "rideTypeId": None,
   "customerId": None,
@@ -2133,9 +2134,9 @@ def tool_accept_bid_choice(choice_index: int = None, driver_name: str = None):
     }
 
 async def tool_book_ride_with_details(
-    pickup_place: str,
     dropoff_place: str,
     ride_type: str,
+    pickup_place: str | None = None,
     stops=None,
     payment_via=None,
     is_scheduled=False,
@@ -2145,7 +2146,30 @@ async def tool_book_ride_with_details(
     """
     AUTONOMOUS BOOKING: When all booking details are collected, this tool automatically books the ride.
     It uses the LangGraph workflow to process everything end-to-end.
+    
+    If pickup_place is not provided, uses current_location from STATE (fetched from backend API).
     """
+    # If pickup_place is not provided, try to use current location
+    if not pickup_place:
+        current_loc = STATE.get("current_location")
+        if current_loc:
+            # Use current location coordinates as pickup in "lat,lng" format
+            pickup_place = f"{current_loc['lat']},{current_loc['lng']}"
+            print(f"[DEBUG] Using current location as pickup: {pickup_place}")
+        else:
+            return {
+                "ok": False,
+                "error": "Pickup location is required. Please provide pickup location or ensure location services are enabled.",
+            }
+    
+    # If pickup_place looks like formatted coordinates, extract just the lat,lng
+    import re
+    coord_match = re.search(r"\(?\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)?", pickup_place)
+    if coord_match and ("Coordinates" in pickup_place or "coordinates" in pickup_place.lower()):
+        # Extract clean lat,lng format
+        pickup_place = f"{coord_match.group(1)},{coord_match.group(2)}"
+        print(f"[DEBUG] Cleaned pickup coordinates: {pickup_place}")
+    
     # Log the parameters being passed for debugging
     print(f"[DEBUG] book_ride_with_details called with:")
     print(f"  pickup_place: '{pickup_place}'")
