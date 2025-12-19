@@ -486,7 +486,7 @@ from rides import (
 from utils import strip_asterisks
 
 load_dotenv()
-MODEL = os.getenv("MODEL", "gpt-4o")
+MODEL = os.getenv("MODEL", "gpt-5.2")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     print("Please set OPENAI_API_KEY in .env")
@@ -502,15 +502,19 @@ CORE WORKFLOW:
    - Extract from CURRENT message only: dropoff location (required), ride type (required), pickup location (optional - uses current location if not provided), stops (optional)
    - Current location is automatically available - use it as pickup when user provides only dropoff
 
-2. RIDE TYPE HANDLING:
-   - If user mentions a ride type OR you need to show ride types → IMMEDIATELY call list_ride_types FIRST
-   - Present ALL active ride types from the API response
+2. RIDE TYPE HANDLING (MANDATORY):
+   - ALWAYS call list_ride_types FIRST before showing ride types to the user
+   - NEVER infer, guess, or decide ride types on your own - you MUST call the API to get the actual available ride types
+   - Even if user mentions a ride type (e.g., "Lumi Go"), you MUST call list_ride_types first to get the actual list from the API
+   - Present ALL active ride types from the API response to the user
    - Wait for user selection, then proceed
+   - DO NOT show ride types without calling list_ride_types first
 
 3. BOOKING FLOW:
-   - Scenario A: User provides ALL details (dropoff + ride_type) → Ask for confirmation → Call book_ride_with_details
-   - Scenario B: User provides dropoff only → Call list_ride_types → Show options → Wait for selection → Ask confirmation → Call book_ride_with_details
-   - Scenario C: User provides dropoff + ride_type in one message → Ask confirmation → Call book_ride_with_details
+   - Scenario A: User provides ALL details (dropoff + ride_type) → Call list_ride_types FIRST → Show options → Wait for user selection → Ask confirmation → Call book_ride_with_details
+   - Scenario B: User provides dropoff only → Call list_ride_types FIRST → Show options → Wait for selection → Ask confirmation → Call book_ride_with_details
+   - Scenario C: User provides dropoff + ride_type in one message → Call list_ride_types FIRST → Show options → Wait for user selection → Ask confirmation → Call book_ride_with_details
+   - CRITICAL: Even if user mentions a ride type, you MUST call list_ride_types first to get the actual list from API, then show it to the user
 
 4. CONFIRMATION:
    - ALWAYS ask: "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?"
@@ -520,7 +524,13 @@ FEW-SHOT EXAMPLES:
 
 Example 1 - Complete details in one message:
 User: "I want to go to F7 Markaz Islamabad on Lumi GO"
-Assistant: [Calls list_ride_types to validate] "Perfect! I'll book your ride from your current location to F7 Markaz, Islamabad using LUMI_GO. Should I proceed with booking your ride?"
+Assistant: [Calls list_ride_types FIRST] "Here are the available ride types:
+1) LUMI_GO
+2) LUMI_PLUS
+3) LUMI_MAX
+Which ride type would you like?"
+User: "Lumi GO"
+Assistant: "Perfect! I'll book your ride from your current location to F7 Markaz, Islamabad using LUMI_GO. Should I proceed with booking your ride?"
 User: "Yes"
 Assistant: [Calls book_ride_with_details(dropoff_place="F7 Markaz Islamabad", ride_type="LUMI_GO")] "Your ride has been booked successfully..."
 
@@ -538,13 +548,65 @@ Assistant: [Calls book_ride_with_details(dropoff_place="F7 Markaz Islamabad", ri
 
 Example 3 - User provides both locations:
 User: "Book a ride from Gaddafi Stadium to Johar Town on Lumi Pink"
-Assistant: [Calls list_ride_types to validate] "I'll book your ride from Gaddafi Stadium to Johar Town using LUMI_PINK. Should I proceed with booking your ride?"
+Assistant: [Calls list_ride_types FIRST] "Here are the available ride types:
+1) LUMI_GO
+2) LUMI_PLUS
+3) LUMI_PINK
+Which ride type would you like?"
+User: "Lumi Pink"
+Assistant: "I'll book your ride from Gaddafi Stadium to Johar Town using LUMI_PINK. Should I proceed with booking your ride?"
 User: "Yes"
 Assistant: [Calls book_ride_with_details(pickup_place="Gaddafi Stadium", dropoff_place="Johar Town", ride_type="LUMI_PINK")] "Your ride has been booked successfully..."
 
+**WRONG WORKFLOWS - NEVER DO THESE:**
+
+WRONG Example 1 - Not calling list_ride_types first when user mentions a ride type:
+User: "I want to travel to F7 Markaz Islamabad after stopping at F6 Markaz Islamabad"
+Assistant: "Please specify the ride type... Here are the available ride types: 1) LUMI_GO, 2) LUMI_PLUS..." ❌ WRONG - You showed ride types without calling list_ride_types API first
+CORRECT: [Calls list_ride_types FIRST] "Here are the available ride types: 1) LUMI_GO, 2) LUMI_PLUS..." ✅
+
+WRONG Example 2 - Saying "Yes" or "Go ahead" when user selects ride type:
+User: "Lumi Go"
+Assistant: "Yes go ahead and book it." ❌ WRONG - You're saying yes, but you should ask THEM for confirmation
+Assistant: "Yes, please proceed with the booking." ❌ WRONG - You're saying yes, but you should ask THEM for confirmation
+CORRECT: "Perfect! I'll book your ride from your current location to F7 Markaz, Islamabad using LUMI_GO. Should I proceed with booking your ride?" ✅
+
+WRONG Example 3 - Confirmation loop (asking multiple times):
+User: "Yes"
+Assistant: "Are you sure you want to proceed?" ❌ WRONG - User already confirmed, just book it
+User: "Yes"
+Assistant: "Would you like me to confirm the details again?" ❌ WRONG - This creates a loop
+CORRECT: User says "Yes" → Immediately call book_ride_with_details ✅
+
+WRONG Example 4 - Hallucinating booking success without calling tool:
+User: "Yes"
+Assistant: "Your ride has been booked successfully." ❌ WRONG - You didn't call book_ride_with_details, this is hallucination
+CORRECT: [Calls book_ride_with_details] → Wait for tool response → If {"ok": true}, say success; if {"ok": false}, report the error ✅
+
+WRONG Example 5 - Not using exact error message:
+Tool returns: {"ok": false, "error": "Start Location is outside the valid service zone."}
+Assistant: "There was an issue with the booking. Please check your locations." ❌ WRONG - You're paraphrasing instead of using the exact error
+CORRECT: "Start Location is outside the valid service zone." ✅
+
+WRONG Example 6 - Not asking for help after error:
+Tool returns: {"ok": false, "error": "Failed to get fare quote."}
+Assistant: "Failed to get fare quote." ❌ WRONG - You reported the error but didn't offer help
+CORRECT: "Failed to get fare quote. Is there anything else I can help you with? Would you like to try a different location or ride type?" ✅
+
+ANTI-HALLUCINATION RULES:
+- ALWAYS call list_ride_types FIRST before showing ride types - NEVER infer, guess, or decide ride types on your own
+- NEVER say "Your ride has been booked successfully" without calling book_ride_with_details first
+- NEVER say "Yes" or "Go ahead" when user selects a ride type - YOU ask THEM for confirmation
+- NEVER create confirmation loops - if user confirms, book immediately
+- NEVER paraphrase error messages - use the EXACT error from tool responses
+- ALWAYS ask for help after reporting an error - offer to try different locations or ride types
+- ONLY report success if book_ride_with_details returns {"ok": true}
+- ONLY report errors if tools return {"ok": false, "error": "..."}
+- If you're unsure, call the appropriate tool - don't guess or make up responses
+
 CRITICAL RULES:
 - NEVER send status messages like "Let me check", "Please hold on", "I'll check" - just call tools directly
-- ALWAYS call list_ride_types FIRST when ride type is mentioned or needed
+- ALWAYS call list_ride_types FIRST before showing ride types - NEVER infer or decide ride types on your own
 - Use EXACT location strings from user's message (e.g., "F7 Markaz Islamabad" NOT "F7 Markaz")
 - Current location is auto-available - don't ask for pickup if user provides only dropoff
 - After confirmation, call book_ride_with_details IMMEDIATELY - no delays
@@ -562,10 +624,16 @@ CONVERSATION GUIDELINES:
 - Redirect irrelevant questions politely to ride booking
 - Maintain professional, friendly tone
 
-ERROR HANDLING:
-- Report exact error messages from tools to user
-- Never claim success when tools fail
-- For route errors, ask for city names and retry
+ERROR HANDLING (CRITICAL - NO HALLUCINATION):
+- When tools return errors ({"ok": false, "error": "..."}), use the EXACT error message from the tool response
+- DO NOT paraphrase, rewrite, or summarize the error - present it to the user EXACTLY as provided by the tool
+- DO NOT say generic messages like "Failed to get fare quote" when the tool provides a specific error
+- The error message from tools is already user-friendly and formatted - just pass it through verbatim
+- NEVER claim success when tools fail
+- NEVER make up error messages - only use what tools return
+- Example: If tool returns {"ok": false, "error": "Start Location is outside the valid service zone."}, tell the user exactly: "Start Location is outside the valid service zone." (NOT "There was an issue with your location" or "Failed to get fare quote")
+- If tool returns {"ok": false, "error": "Failed to get fare quote."}, tell the user exactly that - don't add extra context
+- AFTER reporting an error, ALWAYS ask the user if they need any other help, e.g., "Is there anything else I can help you with?" or "Would you like to try a different location or ride type?"
 """
 
 tools = [
@@ -618,15 +686,15 @@ tools = [
                 "description":"Place name or address to resolve (e.g., 'F-6 Markaz, Islamabad')"
               },
               {
-                "type":"object",
-                "properties":{
-                  "lat":{"type":"number"},
-                  "lng":{"type":"number"},
-                  "address":{"type":"string"},
+            "type":"object",
+            "properties":{
+              "lat":{"type":"number"},
+              "lng":{"type":"number"},
+              "address":{"type":"string"},
                   "order":{"type":"integer"},
                   "place_name":{"type":"string","description":"Place name if coordinates are provided"}
-                },
-                "required":["lat","lng"]
+            },
+            "required":["lat","lng"]
               }
             ]
           }}
@@ -666,7 +734,7 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"book_ride_with_details",
-      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (dropoff location and ride type), call this tool to automatically book the ride. CRITICAL: You MUST have dropoff_place and ride_type before calling this tool. pickup_place is OPTIONAL - if not provided, the system will automatically use the user's current location (fetched from backend API). If ride_type is missing, DO NOT call this tool - instead ask the user which ride type they want by calling list_ride_types first. IMPORTANT: Before calling this with a ride_type, FIRST call list_ride_types to validate the ride type exists. CRITICAL: Always use the COMPLETE location names from the conversation (e.g., 'Jamil Sweets, E-11' NOT just 'E-11', 'NSTP, H-12' NOT just 'NSTP'). Preserve the full location strings as mentioned by the user. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have dropoff_place and ride_type. If pickup_place is not provided, current location will be used automatically.",
+      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (dropoff location and ride type), call this tool to automatically book the ride. CRITICAL: You MUST have dropoff_place and ride_type before calling this tool. pickup_place is OPTIONAL - if not provided, the system will automatically use the user's current location (fetched from backend API). If ride_type is missing, DO NOT call this tool - instead ask the user which ride type they want by calling list_ride_types first. IMPORTANT: Before calling this with a ride_type, FIRST call list_ride_types to validate the ride type exists. CRITICAL: Always use the COMPLETE location names from the conversation (e.g., 'Jamil Sweets, E-11' NOT just 'E-11', 'NSTP, H-12' NOT just 'NSTP'). Preserve the full location strings as mentioned by the user. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have dropoff_place and ride_type. If pickup_place is not provided, current location will be used automatically. ANTI-HALLUCINATION: NEVER say 'Your ride has been booked successfully' without calling this tool first. Wait for tool response - if {'ok': True}, report success; if {'ok': False}, report the EXACT error message from the tool. NEVER make up success or error messages.",
       "parameters":{
         "type":"object",
         "properties":{
@@ -1175,11 +1243,11 @@ async def tool_set_stops(stops):
         else:
             # Stop is already an object with coordinates
             norm.append({
-                "lat": s.get("lat") or s.get("latitude"),
-                "lng": s.get("lng") or s.get("longitude"),
+            "lat": s.get("lat") or s.get("latitude"),
+            "lng": s.get("lng") or s.get("longitude"),
                 "address": s.get("address") or s.get("place_name", ""),
-                "order": s.get("order", idx + 1),  # ensure order field exists
-            })
+            "order": s.get("order", idx + 1),  # ensure order field exists
+        })
     
     STATE["stops"] = norm
     return {"ok": True, "count": len(norm), "stops": norm}
@@ -1262,9 +1330,11 @@ async def tool_set_ride_type(ride_type_name: str):
     fare_result = await tool_get_fare_quote()
     
     if not fare_result.get("ok"):
+        # Pass through the actual error message from fare_result
+        error_msg = fare_result.get('error', 'Failed to get fare quote')
         return {
             "ok": False,
-            "error": f"Failed to get fare quote: {fare_result.get('error')}",
+            "error": error_msg,  # Use the actual error message directly, don't wrap it
             "ride_type_set": True,
             "ride_type_name": STATE["rideTypeName"],
             "ride_type_id": STATE["rideTypeId"],
@@ -1274,9 +1344,11 @@ async def tool_set_ride_type(ride_type_name: str):
     booking_result = await tool_auto_book_ride()
     
     if not booking_result.get("ok"):
+        # Pass through the actual error message from booking_result
+        error_msg = booking_result.get('error', 'Failed to book ride')
         return {
             "ok": False,
-            "error": f"Failed to book ride: {booking_result.get('error')}",
+            "error": error_msg,  # Use the actual error message directly, don't wrap it
             "ride_type_set": True,
             "fare_quote_ok": True,
             "ride_type_name": STATE["rideTypeName"],
@@ -1514,7 +1586,24 @@ async def tool_get_fare_for_locations(pickup_place: str, dropoff_place: str):
                     "error": "Fare service temporarily unavailable. Please try again in a moment.",
                     "error_type": "SERVICE_UNAVAILABLE",
                 }
-            error_msg = _extract_user_friendly_error(fare.get("data", {}), fare.get("status"))
+            # Extract error message from API response
+            fare_data = fare.get("data", {})
+            error_msg = _extract_user_friendly_error(fare_data, fare.get("status"))
+            
+            # Debug: Print what we're extracting
+            if not error_msg or error_msg == "Invalid request. Please check your booking details.":
+                print(f"[DEBUG] Fare error extraction - status: {fare.get('status')}, data: {fare_data}")
+            
+            # If extraction failed, try to get message directly
+            if not error_msg or error_msg == "Invalid request. Please check your booking details.":
+                if isinstance(fare_data, dict):
+                    if "message" in fare_data:
+                        msg = fare_data["message"]
+                        if isinstance(msg, list) and len(msg) > 0:
+                            error_msg = msg[0]
+                        elif isinstance(msg, str):
+                            error_msg = msg
+            
             return {
                 "ok": False,
                 "error": error_msg or "Failed to get fare quote.",
