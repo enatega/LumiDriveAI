@@ -28,3 +28,12 @@ def stops_param_for_fare(stops: List[Dict[str, float]] | None) -> str | None:
     # fare/all expects a JSON string for stops (from your logs)
     import json
     return json.dumps([{"lat": s["lat"], "lng": s["lng"]} for s in stops])
+
+def strip_asterisks(text: str) -> str:
+    """
+    Output guardrail: Strip all asterisks (*) from assistant output.
+    This ensures clean text output without markdown formatting characters.
+    """
+    if not isinstance(text, str):
+        return text
+    return text.replace("*", "")

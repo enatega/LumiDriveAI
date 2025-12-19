@@ -21,6 +21,7 @@ from memory_store import (
     memory_to_openai_messages,
 )
 from speech import transcribe_audio, synthesize_speech
+from utils import strip_asterisks
 import json
 import os
 from dotenv import load_dotenv
@@ -142,6 +143,7 @@ async def _run_tools_for_message(msg, messages: List[Dict[str, Any]], user_locat
                 logger.info(f"  pickup_place: '{args.get('pickup_place', 'NOT PROVIDED')}'")
                 logger.info(f"  dropoff_place: '{args.get('dropoff_place', 'NOT PROVIDED')}'")
                 logger.info(f"  ride_type: '{args.get('ride_type', 'NOT PROVIDED')}'")
+                logger.info(f"  stops: {args.get('stops', [])}")
                 result = await tool_book_ride_with_details(**args)
             elif tc.function.name == "auto_book_ride":
                 from assistant import tool_auto_book_ride
@@ -267,11 +269,15 @@ async def chat_endpoint(
                 for chunk in stream:
                     delta = chunk.choices[0].delta
                     if delta.content:
-                        final_chunks.append(delta.content)
+                        # Strip asterisks from each chunk as it's streamed
+                        cleaned_content = strip_asterisks(delta.content)
+                        final_chunks.append(cleaned_content)
                         chunk_count += 1
-                        yield delta.content
+                        yield cleaned_content
             finally:
                 final_text = "".join(final_chunks).strip()
+                # Strip asterisks from final text before saving to memory
+                final_text = strip_asterisks(final_text)
                 elapsed_time = time.time() - start_time
                 if final_text:
                     memory.chat_memory.add_ai_message(final_text)

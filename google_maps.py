@@ -21,6 +21,9 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     print("⚠️ Warning: GOOGLE_API_KEY not set in .env. Google Maps features will not work.")
 
+# HTTP client timeout for Google Maps API calls (30 seconds)
+HTTP_TIMEOUT = 30.0
+
 
 class GoogleMapsService:
     """Service for interacting with Google Maps APIs"""
@@ -59,7 +62,7 @@ class GoogleMapsService:
             url = f"https://maps.googleapis.com/maps/api/directions/json?origin={originStr}&destination={destinationStr}{waypoints}&key={self.googleApiKey}"
             
             import httpx
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
                 res = await client.get(url)
                 res.raise_for_status()
                 data = res.json()
@@ -105,7 +108,7 @@ class GoogleMapsService:
             url = f"https://roads.googleapis.com/v1/snapToRoads?path={lat},{lng}&key={self.googleApiKey}"
             
             import httpx
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
                 res = await client.get(url)
                 res.raise_for_status()
                 apiData = res.json()
@@ -154,7 +157,7 @@ class GoogleMapsService:
             url = f"https://maps.googleapis.com/maps/api/distancematrix/json?destinations={quote(destinationsParam)}&origins={quote(originsParam)}&units=metric&key={self.googleApiKey}"
             
             import httpx
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
                 response = await client.get(url)
                 response.raise_for_status()
                 data = response.json()
@@ -218,7 +221,7 @@ class GoogleMapsService:
             url = f"https://maps.googleapis.com/maps/api/place/autocomplete/json?input={quote(input)}&key={self.googleApiKey}"
             
             import httpx
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
                 res = await client.get(url)
                 res.raise_for_status()
                 data = res.json()
@@ -251,7 +254,7 @@ class GoogleMapsService:
             url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={quote(placeId)}&fields=geometry&key={self.googleApiKey}"
             
             import httpx
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
                 res = await client.get(url)
                 res.raise_for_status()
                 data = res.json()
@@ -288,7 +291,7 @@ class GoogleMapsService:
             url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{lng}&key={self.googleApiKey}"
             
             import httpx
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
                 res = await client.get(url)
                 res.raise_for_status()
                 data = res.json()

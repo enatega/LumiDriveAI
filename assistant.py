@@ -483,6 +483,7 @@ from rides import (
     cancel_ride_as_customer,
     list_currencies,
 )
+from utils import strip_asterisks
 
 load_dotenv()
 MODEL = os.getenv("MODEL", "gpt-4o-mini")
@@ -507,6 +508,7 @@ SMART BOOKING WORKFLOW:
    - Pickup location (place name, address, or coordinates)
    - Dropoff location (place name, address, or coordinates)
    - Ride type (e.g., "LUMI_GO", "Lumi GO", "Courier", "Bike", etc.)
+   - Stops (optional): Ask the user if they want to add any stops along the route. If yes, collect stop locations (place names or addresses). Stops will be resolved to coordinates automatically.
 
 2. RIDE TYPE AWARENESS (CRITICAL):
    - Common ride types you may encounter (but ALWAYS verify with list_ride_types): LUMI_GO, LUMI_PLUS, LUMI_MAX, LUMI_PLATINUM, LUMI_PINK, LUMI_DIAMOND, Courier, Bike, 4W_MINI, Honda AC
@@ -549,6 +551,7 @@ SMART BOOKING WORKFLOW:
    - pickup_place: The EXACT COMPLETE pickup location string from the user's original message (e.g., "Jamil Sweets, E-11" NOT "E-11", "Islamabad F7 Markaz" NOT "F7 Markaz"). Copy the exact string from the conversation.
    - dropoff_place: The EXACT COMPLETE dropoff location string from the user's original message (e.g., "NSTP, H-12" NOT "NSTP", "Islamabad F6 Markaz" NOT "F6 Markaz"). Copy the exact string from the conversation.
    - ride_type: The selected ride type name (validated via list_ride_types)
+   - stops: Optional list of stop place names if the user wants to add stops (e.g., ["F-6 Markaz, Islamabad", "E-11, Islamabad"])
    
    This tool will automatically:
    - Resolve locations to coordinates if needed
@@ -634,19 +637,28 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"set_stops",
-      "description":"Provide an ordered list of stops (0..N). Each stop may include address.",
+      "description":"Set stops for the ride. Accepts place names (which will be resolved to coordinates) or coordinates directly. Provide an ordered list of stops (0..N). Each stop can be a place name (string) or an object with lat/lng coordinates.",
       "parameters":{
         "type":"object",
         "properties":{
           "stops":{"type":"array","items":{
-            "type":"object",
-            "properties":{
-              "lat":{"type":"number"},
-              "lng":{"type":"number"},
-              "address":{"type":"string"},
-              "order":{"type":"integer"}
-            },
-            "required":["lat","lng"]
+            "oneOf": [
+              {
+                "type":"string",
+                "description":"Place name or address to resolve (e.g., 'F-6 Markaz, Islamabad')"
+              },
+              {
+                "type":"object",
+                "properties":{
+                  "lat":{"type":"number"},
+                  "lng":{"type":"number"},
+                  "address":{"type":"string"},
+                  "order":{"type":"integer"},
+                  "place_name":{"type":"string","description":"Place name if coordinates are provided"}
+                },
+                "required":["lat","lng"]
+              }
+            ]
           }}
         },
         "required":["stops"]
@@ -691,6 +703,7 @@ tools = [
           "pickup_place":{"type":"string","description":"Pickup location as place name (e.g., 'F-6 Markaz, Islamabad') or coordinates (e.g., '33.6956,73.2205'). If coordinates are provided, they should be in 'lat,lng' format."},
           "dropoff_place":{"type":"string","description":"Dropoff location as place name (e.g., 'E-11, Islamabad') or coordinates (e.g., '33.6992,72.9744'). If coordinates are provided, they should be in 'lat,lng' format."},
           "ride_type":{"type":"string","description":"Ride type name (e.g., 'LUMI_GO', 'Lumi GO', 'Courier', 'Bike', etc.)"},
+          "stops":{"type":"array","items":{"type":"string"},"description":"Optional list of stop place names (e.g., ['F-6 Markaz, Islamabad', 'E-11, Islamabad']). Stops will be resolved to coordinates automatically."},
           "payment_via":{"type":"string","enum":["WALLET","CASH","CARD"],"description":"Payment method (optional, defaults to CASH)"},
           "is_scheduled":{"type":"boolean","description":"Whether this is a scheduled ride (optional)"},
           "scheduled_at":{"type":"string","description":"ISO8601 timestamp if is_scheduled is true (optional)"},
@@ -1161,15 +1174,42 @@ async def tool_set_trip_core(pickup, dropoff, pickup_address=None, destination_a
         }
     }
 
-def tool_set_stops(stops):
+async def tool_set_stops(stops):
+    """
+    Set stops for the ride. Accepts place names (strings) or coordinate objects.
+    If place names are provided, resolves them to coordinates using Google Maps API.
+    """
     norm = []
     for idx, s in enumerate(stops):
-        norm.append({
-            "lat": s.get("lat") or s.get("latitude"),
-            "lng": s.get("lng") or s.get("longitude"),
-            **({"address": s.get("address")} if s.get("address") else {}),
-            "order": s.get("order", idx + 1),  # ensure order field exists
-        })
+        # If stop is a string (place name), resolve it to coordinates
+        if isinstance(s, str):
+            place_name = s.strip()
+            if not place_name:
+                continue
+            
+            # Resolve place name to coordinates
+            resolved = await tool_resolve_place_to_coordinates(place_name)
+            if not resolved.get("ok"):
+                return {
+                    "ok": False,
+                    "error": f"Failed to resolve stop '{place_name}': {resolved.get('error', 'Unknown error')}",
+                }
+            
+            norm.append({
+                "lat": resolved["lat"],
+                "lng": resolved["lng"],
+                "address": resolved.get("address", place_name),
+                "order": idx + 1,
+            })
+        else:
+            # Stop is already an object with coordinates
+            norm.append({
+                "lat": s.get("lat") or s.get("latitude"),
+                "lng": s.get("lng") or s.get("longitude"),
+                "address": s.get("address") or s.get("place_name", ""),
+                "order": s.get("order", idx + 1),  # ensure order field exists
+            })
+    
     STATE["stops"] = norm
     return {"ok": True, "count": len(norm), "stops": norm}
 
@@ -2096,6 +2136,7 @@ async def tool_book_ride_with_details(
     pickup_place: str,
     dropoff_place: str,
     ride_type: str,
+    stops=None,
     payment_via=None,
     is_scheduled=False,
     scheduled_at=None,
@@ -2110,6 +2151,7 @@ async def tool_book_ride_with_details(
     print(f"  pickup_place: '{pickup_place}'")
     print(f"  dropoff_place: '{dropoff_place}'")
     print(f"  ride_type: '{ride_type}'")
+    print(f"  stops: {stops}")
     
     try:
         from booking_workflow import process_booking_with_details
@@ -2117,6 +2159,7 @@ async def tool_book_ride_with_details(
             pickup_place=pickup_place,
             dropoff_place=dropoff_place,
             ride_type=ride_type,
+            stops=stops or [],
         )
         return result
     except ImportError:
@@ -2272,7 +2315,15 @@ def call_tool(name, args):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         return loop.run_until_complete(tool_set_trip_core(**args))
-    if name == "set_stops":               return tool_set_stops(**args)
+    if name == "set_stops":
+        # Handle async function
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop.run_until_complete(tool_set_stops(**args))
     if name == "set_courier_fields":      return tool_set_courier_fields(**args)
     if name == "list_ride_types":         return [{"id": t.get("id"), "name": t.get("name"), "active": t.get("isActive")} for t in list_ride_types()]
     if name == "set_ride_type":
@@ -2413,11 +2464,15 @@ def chat_loop():
 
             follow = client.chat.completions.create(model=MODEL, messages=messages)
             final_msg = follow.choices[0].message
-            print("LumiDrive:", final_msg.content, "\n")
-            messages.append({"role": "assistant", "content": final_msg.content})
+            # Strip asterisks from assistant output
+            cleaned_content = strip_asterisks(final_msg.content or "")
+            print("LumiDrive:", cleaned_content, "\n")
+            messages.append({"role": "assistant", "content": cleaned_content})
         else:
-            print("LumiDrive:", msg.content, "\n")
-            messages.append({"role": "assistant", "content": msg.content})
+            # Strip asterisks from assistant output
+            cleaned_content = strip_asterisks(msg.content or "")
+            print("LumiDrive:", cleaned_content, "\n")
+            messages.append({"role": "assistant", "content": cleaned_content})
 
 if __name__ == "__main__":
     try:

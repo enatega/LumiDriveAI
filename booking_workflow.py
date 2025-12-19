@@ -25,6 +25,7 @@ from assistant import (
     list_ride_types,
     _normalize_ride_type_name,
 )
+from utils import strip_asterisks
 import json
 
 
@@ -34,8 +35,10 @@ class BookingState(TypedDict):
     pickup_place: str | None
     dropoff_place: str | None
     ride_type: str | None
+    stops: list[str] | None  # List of stop place names
     pickup_coords: dict | None  # {"lat": float, "lng": float, "address": str}
     dropoff_coords: dict | None
+    stops_coords: list[dict] | None  # List of {"lat": float, "lng": float, "address": str, "order": int}
     ride_type_set: bool
     booking_complete: bool
     error: str | None
@@ -63,9 +66,11 @@ async def resolve_locations(state: BookingState) -> BookingState:
     """Resolve place names to coordinates using Google Maps API"""
     pickup_place = state.get("pickup_place")
     dropoff_place = state.get("dropoff_place")
+    stops = state.get("stops") or []
     
     pickup_coords = None
     dropoff_coords = None
+    stops_coords = []
     error = None
     
     if pickup_place:
@@ -96,10 +101,32 @@ async def resolve_locations(state: BookingState) -> BookingState:
         except Exception as e:
             error = f"Error resolving dropoff: {str(e)}"
     
+    # Resolve stops if no error so far
+    if stops and not error:
+        for idx, stop_place in enumerate(stops):
+            if not stop_place or not isinstance(stop_place, str):
+                continue
+            try:
+                result = await tool_resolve_place_to_coordinates(stop_place)
+                if result.get("ok"):
+                    stops_coords.append({
+                        "lat": result["lat"],
+                        "lng": result["lng"],
+                        "address": result.get("address", stop_place),
+                        "order": idx + 1,
+                    })
+                else:
+                    error = f"Could not resolve stop '{stop_place}': {result.get('error')}"
+                    break
+            except Exception as e:
+                error = f"Error resolving stop '{stop_place}': {str(e)}"
+                break
+    
     return {
         **state,
         "pickup_coords": pickup_coords,
         "dropoff_coords": dropoff_coords,
+        "stops_coords": stops_coords if stops_coords else None,
         "error": error,
     }
 
@@ -108,6 +135,7 @@ async def set_trip_and_ride_type(state: BookingState) -> BookingState:
     """Set trip core and ride type, then auto-book"""
     pickup_coords = state.get("pickup_coords")
     dropoff_coords = state.get("dropoff_coords")
+    stops_coords = state.get("stops_coords") or []
     ride_type = state.get("ride_type")
     
     if not pickup_coords or not dropoff_coords:
@@ -136,18 +164,36 @@ async def set_trip_and_ride_type(state: BookingState) -> BookingState:
             "error": f"Error setting trip: {str(e)}",
         }
     
+    # Set stops if any
+    if stops_coords:
+        try:
+            from assistant import tool_set_stops
+            stops_result = await tool_set_stops(stops_coords)
+            if not stops_result.get("ok"):
+                return {
+                    **state,
+                    "error": f"Failed to set stops: {stops_result.get('error')}",
+                }
+        except Exception as e:
+            return {
+                **state,
+                "error": f"Error setting stops: {str(e)}",
+            }
+    
     # If ride type is provided, set it (which will auto-book)
     if ride_type:
         try:
             ride_result = await tool_set_ride_type(ride_type)
             
             if ride_result.get("ok"):
+                # Strip asterisks from assistant output
+                message_content = strip_asterisks(ride_result.get("message", "Ride booked successfully!"))
                 return {
                     **state,
                     "ride_type_set": True,
                     "booking_complete": True,
                     "messages": state.get("messages", []) + [
-                        AIMessage(content=ride_result.get("message", "Ride booked successfully!"))
+                        AIMessage(content=message_content)
                     ],
                 }
             else:
@@ -205,9 +251,11 @@ def ask_user_for_info(state: BookingState) -> BookingState:
     else:
         response = "I'm processing your booking request..."
     
+    # Strip asterisks from assistant output
+    cleaned_response = strip_asterisks(response)
     return {
         **state,
-        "messages": messages + [AIMessage(content=response)],
+        "messages": messages + [AIMessage(content=cleaned_response)],
     }
 
 
@@ -302,7 +350,8 @@ async def process_booking_request(user_message: str) -> dict:
     response = None
     for msg in reversed(messages):
         if isinstance(msg, AIMessage):
-            response = msg.content
+            # Strip asterisks from assistant output
+            response = strip_asterisks(msg.content or "")
             break
     
     return {
@@ -321,6 +370,7 @@ async def process_booking_with_details(
     pickup_place: str,
     dropoff_place: str,
     ride_type: str,
+    stops: list[str] | None = None,
 ) -> dict:
     """
     Process booking with pre-collected details from the assistant.
@@ -335,15 +385,18 @@ async def process_booking_with_details(
     graph = get_booking_graph()
     
     # Create a synthetic message for the workflow
-    synthetic_message = f"Book ride from {pickup_place} to {dropoff_place} on {ride_type}"
+    stops_str = f" with stops at {', '.join(stops)}" if stops else ""
+    synthetic_message = f"Book ride from {pickup_place} to {dropoff_place} on {ride_type}{stops_str}"
     
     initial_state: BookingState = {
         "messages": [HumanMessage(content=synthetic_message)],
         "pickup_place": pickup_place,
         "dropoff_place": dropoff_place,
         "ride_type": ride_type,
+        "stops": stops or [],
         "pickup_coords": None,
         "dropoff_coords": None,
+        "stops_coords": None,
         "ride_type_set": False,
         "booking_complete": False,
         "error": None,
@@ -357,7 +410,8 @@ async def process_booking_with_details(
     response = None
     for msg in reversed(messages):
         if isinstance(msg, AIMessage):
-            response = msg.content
+            # Strip asterisks from assistant output
+            response = strip_asterisks(msg.content or "")
             break
     
     return {
