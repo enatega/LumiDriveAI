@@ -154,6 +154,9 @@ async def _run_tools_for_message(msg, messages: List[Dict[str, Any]], user_locat
             elif tc.function.name == "create_request_and_poll":
                 from assistant import tool_create_request_and_poll
                 result = await tool_create_request_and_poll(**args)
+            elif tc.function.name == "set_stops":
+                from assistant import tool_set_stops
+                result = await tool_set_stops(**args)
             else:
                 # For sync tools, use call_tool
                 tool_result = call_tool(tc.function.name, args)
