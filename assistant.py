@@ -511,20 +511,37 @@ CORE WORKFLOW:
      * User says "try different ride type" after error → Use previous locations from conversation history
      * User says "change ride type to LUMI_PLUS" → Update ride type, keep all previous locations
 
-2. RIDE TYPE HANDLING (MANDATORY):
-   - ALWAYS call list_ride_types FIRST before showing ride types to the user
-   - NEVER infer, guess, or decide ride types on your own - you MUST call the API to get the actual available ride types
-   - Even if user mentions a ride type (e.g., "Lumi Go"), you MUST call list_ride_types first to get the actual list from the API
-   - Present ALL active ride types from the API response to the user
-   - Wait for user selection, then proceed
-   - DO NOT show ride types without calling list_ride_types first
+2. RIDE TYPE HANDLING (MANDATORY - BE SMART & DYNAMIC):
+   - STEP 1: ALWAYS call list_ride_types FIRST to get the actual available ride types from the API
+   - STEP 2: CHECK USER'S MESSAGE for mentioned ride type BEFORE responding:
+     * BE INTELLIGENT ABOUT USER LANGUAGE: Recognize ride types in natural language variations:
+       - "Lumi Go", "lumi go", "LUMI_GO", "Book a lumi go ride", "I want lumi go", "book lumi go" → All mean LUMI_GO
+       - "Lumi Plus", "lumi plus", "LUMI_PLUS", "Book a lumi plus ride", "book lumi plus" → All mean LUMI_PLUS
+       - "Lumi Max", "lumi max", "LUMI_MAX", "book lumi max" → All mean LUMI_MAX
+       - "Lumi Pink", "lumi pink", "LUMI_PINK", "book lumi pink" → All mean LUMI_PINK
+       - "Lumi Diamond", "lumi diamond", "LUMI_DIAMOND", "book lumi diamond" → All mean LUMI_DIAMOND
+       - "Lumi Platinum", "lumi platinum", "LUMI_PLATINUM", "book lumi platinum" → All mean LUMI_PLATINUM
+   - STEP 3: MATCH USER'S SELECTION to API response:
+     * After receiving list_ride_types response, check if user mentioned a ride type in their message
+     * Match user's mentioned ride type (case-insensitive, ignore spaces/underscores) to API ride types:
+       - User says "lumi go" → Match to "LUMI_GO" in API response
+       - User says "Book a lumi go ride" → Extract "lumi go" → Match to "LUMI_GO" in API response
+     * If match found AND ride type is active → Acknowledge their selection, DON'T show all options, proceed with that ride type
+     * If user hasn't mentioned a ride type OR their mentioned type doesn't match → Show all available ride types and ask them to select
+   - CRITICAL RULE: When user says "Book a lumi go ride" or similar:
+     * Call list_ride_types FIRST (to verify it exists)
+     * Extract "lumi go" from user's message
+     * Match it to "LUMI_GO" in the API response
+     * If found → Say "I'll book a LUMI_GO ride for you. What's your dropoff location?" (DON'T show all ride types)
+     * If NOT found → Show all available ride types
    - CRITICAL: When user JUST mentions a ride type (e.g., "Lumi Plus", "LUMI_PLUS") without other context, check conversation history for previous locations (pickup, dropoff, stops), then show booking details with those locations and ask for confirmation - NEVER just say "Yes"
 
 3. BOOKING FLOW:
-   - Scenario A: User provides ALL details (dropoff + ride_type) → Call list_ride_types FIRST → Show options → Wait for user selection → Ask confirmation → Call book_ride_with_details
-   - Scenario B: User provides dropoff only → Call list_ride_types FIRST → Show options → Wait for selection → Ask confirmation → Call book_ride_with_details
-   - Scenario C: User provides dropoff + ride_type in one message → Call list_ride_types FIRST → Show options → Wait for user selection → Ask confirmation → Call book_ride_with_details
-   - CRITICAL: Even if user mentions a ride type, you MUST call list_ride_types first to get the actual list from API, then show it to the user
+   - Scenario A: User provides ALL details (dropoff + ride_type) → Call list_ride_types FIRST → Match user's ride type to API response → If match found, acknowledge selection and ask confirmation → Call book_ride_with_details
+   - Scenario B: User provides dropoff only → Call list_ride_types FIRST → Show all options → Wait for selection → Ask confirmation → Call book_ride_with_details
+   - Scenario C: User provides ride_type only (e.g., "Book a lumi go ride") → Call list_ride_types FIRST → Match user's ride type → If match found, acknowledge selection and ask for missing dropoff location → Once dropoff provided, ask confirmation → Call book_ride_with_details
+   - Scenario D: User provides dropoff + ride_type in one message → Call list_ride_types FIRST → Match user's ride type → If match found, acknowledge selection and ask confirmation → Call book_ride_with_details
+   - CRITICAL: Always call list_ride_types first, but be smart - if user already specified a ride type, match it and proceed instead of showing all options
 
 4. CONFIRMATION (ALWAYS USE QUESTION FORMAT):
    - ALWAYS ask as a QUESTION, never make statements like "I'll proceed" or "Let me book"
@@ -540,13 +557,7 @@ FEW-SHOT EXAMPLES:
 
 Example 1 - Complete details in one message:
 User: "I want to go to F7 Markaz Islamabad on Lumi GO"
-Assistant: [Calls list_ride_types FIRST] "Here are the available ride types:
-1) LUMI_GO
-2) LUMI_PLUS
-3) LUMI_MAX
-Which ride type would you like?"
-User: "Lumi GO"
-Assistant: "Perfect! I'll book your ride from your current location to F7 Markaz, Islamabad using LUMI_GO. Should I proceed with booking your ride?"
+Assistant: [Calls list_ride_types FIRST, recognizes "Lumi GO" = LUMI_GO] "Perfect! I'll book your ride from your current location to F7 Markaz, Islamabad using LUMI_GO. Should I proceed with booking your ride?"
 User: "Yes"
 Assistant: [Calls book_ride_with_details(dropoff_place="F7 Markaz Islamabad", ride_type="LUMI_GO")] "Your ride has been booked successfully..."
 
@@ -562,17 +573,20 @@ Assistant: "Perfect! I'll book your ride from your current location to F7 Markaz
 User: "Yes"
 Assistant: [Calls book_ride_with_details(dropoff_place="F7 Markaz Islamabad", ride_type="LUMI_GO")] "Your ride has been booked successfully..."
 
-Example 3 - User provides both locations:
+Example 3 - User provides both locations with ride type:
 User: "Book a ride from Gaddafi Stadium to Johar Town on Lumi Pink"
-Assistant: [Calls list_ride_types FIRST] "Here are the available ride types:
-1) LUMI_GO
-2) LUMI_PLUS
-3) LUMI_PINK
-Which ride type would you like?"
-User: "Lumi Pink"
-Assistant: "I'll book your ride from Gaddafi Stadium to Johar Town using LUMI_PINK. Should I proceed with booking your ride?"
+Assistant: [Calls list_ride_types FIRST, recognizes "Lumi Pink" = LUMI_PINK] "I'll book your ride from Gaddafi Stadium to Johar Town using LUMI_PINK. Should I proceed with booking your ride?"
 User: "Yes"
 Assistant: [Calls book_ride_with_details(pickup_place="Gaddafi Stadium", dropoff_place="Johar Town", ride_type="LUMI_PINK")] "Your ride has been booked successfully..."
+
+Example 3B - User mentions ride type but missing dropoff (SMART RECOGNITION - CRITICAL):
+User: "Book a lumi go ride"
+Assistant: [Calls list_ride_types FIRST] [Receives response with LUMI_GO, LUMI_PLUS, etc.] [Extracts "lumi go" from user message] [Matches "lumi go" to "LUMI_GO" in API response] "I'll book a LUMI_GO ride for you. What's your dropoff location?"
+❌ WRONG: "Here are the available ride types... Which ride type would you like?" - User already said "lumi go", don't ask again!
+User: "F7 Markaz Islamabad"
+Assistant: "Perfect! I'll book your ride from your current location to F7 Markaz, Islamabad using LUMI_GO. Should I proceed with booking your ride?"
+User: "Yes"
+Assistant: [Calls book_ride_with_details(dropoff_place="F7 Markaz Islamabad", ride_type="LUMI_GO")] "Your ride has been booked successfully..."
 
 Example 4 - Retry with different ride type after error (CONTEXT HANDLING):
 User: "I want to travel to F7 Markaz Islamabad after stopping at F6 Markaz Islamabad"
@@ -615,6 +629,17 @@ WRONG Example 1 - Not calling list_ride_types first when user mentions a ride ty
 User: "I want to travel to F7 Markaz Islamabad after stopping at F6 Markaz Islamabad"
 Assistant: "Please specify the ride type... Here are the available ride types: 1) LUMI_GO, 2) LUMI_PLUS..." ❌ WRONG - You showed ride types without calling list_ride_types API first
 CORRECT: [Calls list_ride_types FIRST] "Here are the available ride types: 1) LUMI_GO, 2) LUMI_PLUS..." ✅
+
+WRONG Example 1B - Not recognizing ride type when user explicitly mentions it (CRITICAL - THIS IS THE EXACT MISTAKE TO AVOID):
+User: "Book a lumi go ride"
+Assistant: [Calls list_ride_types] "Here are the available ride types: 1) LUMI_GO, 2) LUMI_PLUS... Which ride type would you like?" ❌ ABSOLUTELY WRONG - User already said "lumi go" in their message, you MUST extract it, match it to LUMI_GO in the API response, acknowledge their selection, and ask for dropoff location instead of showing all options
+CORRECT WORKFLOW: 
+1. User says "Book a lumi go ride"
+2. Call list_ride_types FIRST (to verify it exists)
+3. Extract "lumi go" from user's message
+4. Match "lumi go" (case-insensitive) to "LUMI_GO" in API response
+5. If match found → Say "I'll book a LUMI_GO ride for you. What's your dropoff location?" ✅
+6. If NOT found → Show all available ride types
 
 WRONG Example 2 - Saying "Yes" when user mentions ride type:
 User: "Lumi Plus"
@@ -806,7 +831,7 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"list_ride_types",
-      "description":"Fetch available ride types from the API. CRITICAL: Call this IMMEDIATELY when: 1) User mentions a ride type (to validate it exists), 2) User asks for ride type options, 3) You need to show available ride types to the user. Returns ALL ride types with their 'active' status. You MUST present ALL active ride types (where active=true) to the user - never filter or omit any. NEVER make up or guess ride types - always call this function to get the actual list from the API. Use this to validate user's ride type selection before proceeding with booking.",
+      "description":"Fetch available ride types from the API. CRITICAL: Call this IMMEDIATELY when: 1) User mentions a ride type (to validate it exists), 2) User asks for ride type options, 3) You need to show available ride types to the user. Returns ALL ride types with their 'active' status. IMPORTANT MATCHING RULE: After calling this function, check if the user already mentioned a ride type in their message (e.g., 'Book a lumi go ride'). If they did, extract it from their message, match it to the API response (case-insensitive, e.g., 'lumi go' matches 'LUMI_GO'), and if found, acknowledge their selection and proceed - DON'T show all options. Only show all options if user hasn't mentioned a ride type or their mentioned type doesn't match. NEVER make up or guess ride types - always call this function to get the actual list from the API.",
       "parameters":{"type":"object","properties":{}}
   }},
   { "type":"function", "function": {
@@ -1749,13 +1774,16 @@ async def tool_get_fare_for_locations(pickup_place: str, dropoff_place: str):
             "error": "Failed to get fare quote.",
         }
 
-def tool_check_active_ride():
+async def tool_check_active_ride():
     """
     Check if user has an active/ongoing ride.
     Returns ride details if active ride exists, or indicates no active ride.
+    Converts coordinates to addresses using Google Maps reverse geocoding.
     """
     try:
         from rides import active_ride_for_customer
+        from google_maps import GoogleMapsService
+        
         result = active_ride_for_customer()
         
         if result["status"] == 200 and result.get("data"):
@@ -1768,10 +1796,71 @@ def tool_check_active_ride():
             if isinstance(ride_data, dict) and (ride_id or ride_status):
                 # Format the response message
                 driver_name = "a driver"
-                pickup_address = ride_data.get("pickup_location") or "your pickup location"
-                dropoff_address = ride_data.get("dropoff_location") or "your destination"
+                pickup_location_raw = ride_data.get("pickup_location") or ride_data.get("pickup_address")
+                dropoff_location_raw = ride_data.get("dropoff_location") or ride_data.get("dropoff_address")
                 ride_type_name = "your ride type"
                 fare = ride_data.get("agreed_price")
+                
+                # Helper function to extract lat/lng from various formats
+                def extract_coordinates(loc):
+                    """Extract lat/lng from string coordinates or dict with lat/lng keys"""
+                    if isinstance(loc, dict):
+                        lat = loc.get("lat") or loc.get("latitude")
+                        lng = loc.get("lng") or loc.get("longitude")
+                        if lat is not None and lng is not None:
+                            return float(lat), float(lng)
+                    elif isinstance(loc, str):
+                        # Check for lat,lng format (e.g., "33.6844,73.0479")
+                        import re
+                        coord_pattern = r'^-?\d+\.?\d*,-?\d+\.?\d*$'
+                        if re.match(coord_pattern, loc.strip()):
+                            try:
+                                parts = loc.split(',')
+                                if len(parts) == 2:
+                                    return float(parts[0].strip()), float(parts[1].strip())
+                            except:
+                                pass
+                    return None, None
+                
+                # Helper function to check if location is coordinates (not an address string)
+                def is_coordinates(loc):
+                    """Check if location is coordinates (not an address string)"""
+                    lat, lng = extract_coordinates(loc)
+                    return lat is not None and lng is not None
+                
+                # Resolve pickup address
+                pickup_address = "your pickup location"
+                if pickup_location_raw:
+                    lat, lng = extract_coordinates(pickup_location_raw)
+                    if lat is not None and lng is not None:
+                        # Reverse geocode coordinates to address
+                        try:
+                            maps_service = GoogleMapsService()
+                            geocode_result = await maps_service.fetchAddressFromCoordinates(lat, lng)
+                            pickup_address = geocode_result.get("address", pickup_location_raw)
+                        except Exception as e:
+                            print(f"⚠️ Error reverse geocoding pickup: {e}")
+                            pickup_address = pickup_location_raw
+                    else:
+                        # Already an address string
+                        pickup_address = pickup_location_raw
+                
+                # Resolve dropoff address
+                dropoff_address = "your destination"
+                if dropoff_location_raw:
+                    lat, lng = extract_coordinates(dropoff_location_raw)
+                    if lat is not None and lng is not None:
+                        # Reverse geocode coordinates to address
+                        try:
+                            maps_service = GoogleMapsService()
+                            geocode_result = await maps_service.fetchAddressFromCoordinates(lat, lng)
+                            dropoff_address = geocode_result.get("address", dropoff_location_raw)
+                        except Exception as e:
+                            print(f"⚠️ Error reverse geocoding dropoff: {e}")
+                            dropoff_address = dropoff_location_raw
+                    else:
+                        # Already an address string
+                        dropoff_address = dropoff_location_raw
                 
                 # Extract driver name
                 driver = ride_data.get("driver", {})
