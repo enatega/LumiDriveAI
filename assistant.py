@@ -964,8 +964,8 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"cancel_ride",
-      "description":"Cancel a ride",
-      "parameters":{"type":"object","properties":{"rideId":{"type":"string"},"reason":{"type":"string"}},"required":["rideId"]}
+      "description":"Cancel a ride. IMPORTANT: This tool automatically checks for active ride first and uses that ride ID. If user says 'cancel this ride' or 'cancel my ride', just call this tool - it will automatically get the correct ride ID from the active ride. The rideId parameter is required but the tool will override it with the active ride ID if one exists. Only if there's no active ride will it use the provided rideId (for canceling a specific ride by ID).",
+      "parameters":{"type":"object","properties":{"rideId":{"type":"string","description":"Ride ID parameter (required but will be overridden by active ride ID if available). If user says 'cancel this ride', you can use any placeholder value - the tool will automatically fetch the correct ride ID from the active ride."},"reason":{"type":"string","description":"Optional cancellation reason"}},"required":["rideId"]}
   }}
 ]
 
@@ -2552,7 +2552,72 @@ def tool_track_ride(rideId=None):
     
     return get_customer_ride(rideId)
 
-def tool_cancel_ride(rideId, reason=None):
+async def tool_cancel_ride(rideId, reason=None):
+    """
+    Cancel a ride. Always checks for active ride first and uses that ride ID.
+    This ensures we always cancel the correct/current ride, not an old one.
+    """
+    import re
+    
+    # Validate rideId is a UUID format (basic check)
+    uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    
+    # First, always check for active ride to get the correct ride ID
+    try:
+        active_ride_result = await tool_check_active_ride()
+        if active_ride_result.get("ok") and active_ride_result.get("has_active_ride"):
+            active_ride_id = active_ride_result.get("rideId")
+            if active_ride_id:
+                # Always use the active ride ID (most common case: user says "cancel this ride")
+                print(f"✅ Found active ride ID: {active_ride_id}. Using it to cancel ride.")
+                rideId = active_ride_id
+            else:
+                return {
+                    "ok": False,
+                    "error": "Could not find active ride ID. No active ride to cancel.",
+                }
+        else:
+            # No active ride found - use provided rideId if it's valid
+            if not rideId or not isinstance(rideId, str):
+                return {
+                    "ok": False,
+                    "error": "No active ride found and no valid ride ID provided. Please provide a valid ride ID.",
+                }
+            
+            # Validate provided rideId is a UUID
+            if not re.match(uuid_pattern, rideId.lower().strip()):
+                return {
+                    "ok": False,
+                    "error": f"Invalid ride ID format: '{rideId}' is not a valid UUID. No active ride found to cancel.",
+                }
+            
+            # Use provided rideId (user wants to cancel a specific ride, not active one)
+            print(f"⚠️ No active ride found. Using provided ride ID: {rideId}")
+    except Exception as e:
+        print(f"⚠️ Error checking active ride: {e}")
+        # Fallback: use provided rideId if it's valid
+        if not rideId or not isinstance(rideId, str):
+            return {
+                "ok": False,
+                "error": f"Error checking active ride and no valid ride ID provided: {str(e)}",
+            }
+        
+        if not re.match(uuid_pattern, rideId.lower().strip()):
+            return {
+                "ok": False,
+                "error": f"Error checking active ride and invalid ride ID format: '{rideId}' is not a valid UUID.",
+            }
+        
+        print(f"⚠️ Using provided ride ID as fallback: {rideId}")
+    
+    # Final validation
+    if not re.match(uuid_pattern, rideId.lower().strip()):
+        return {
+            "ok": False,
+            "error": f"Invalid ride ID: '{rideId}' is not a valid UUID format.",
+        }
+    
+    # Cancel the ride
     return cancel_ride_as_customer(rideId)
 
 def call_tool(name, args):

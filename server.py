@@ -157,6 +157,9 @@ async def _run_tools_for_message(msg, messages: List[Dict[str, Any]], user_locat
             elif tc.function.name == "set_stops":
                 from assistant import tool_set_stops
                 result = await tool_set_stops(**args)
+            elif tc.function.name == "cancel_ride":
+                from assistant import tool_cancel_ride
+                result = await tool_cancel_ride(**args)
             else:
                 # For sync tools, use call_tool
                 tool_result = call_tool(tc.function.name, args)
