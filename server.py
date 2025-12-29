@@ -281,7 +281,8 @@ async def chat_endpoint(
             raise HTTPException(status_code=502, detail=f"Failed to reach OpenAI: {exc}") from exc
 
         first_msg = first.choices[0].message
-        if first_msg.tool_calls:
+        had_tool_calls = bool(first_msg.tool_calls)
+        if had_tool_calls:
             logger.info(f"[{request_id}] Executing {len(first_msg.tool_calls)} tool calls...")
             for tc in first_msg.tool_calls:
                 logger.info(f"[{request_id}] Tool Call: {tc.function.name}")
@@ -289,9 +290,17 @@ async def chat_endpoint(
 
         try:
             logger.info(f"[{request_id}] Calling OpenAI API (streaming response)...")
+            # If there were tool calls, _run_tools_for_message already added the assistant message
+            # with tool_calls and tool responses to messages. Only add assistant message if there
+            # were no tool calls.
+            if had_tool_calls:
+                stream_messages = messages
+            else:
+                # No tool calls, so add the assistant message with its content
+                stream_messages = messages + [{"role": "assistant", "content": first_msg.content or ""}]
             stream = client.chat.completions.create(
                 model=MODEL,
-                messages=messages + [{"role": "assistant", "content": first_msg.content or ""}],
+                messages=stream_messages,
                 stream=True,
             )
             logger.info(f"[{request_id}] OpenAI streaming started")

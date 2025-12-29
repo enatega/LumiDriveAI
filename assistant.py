@@ -548,7 +548,7 @@ CORE WORKFLOW:
    - Use question format: "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" or "Do you want me to proceed with booking?"
    - Include booking details in the confirmation question: "I'll book your ride from [pickup] to [dropoff] using [ride_type]. Should I proceed with booking your ride?"
    - ABSOLUTELY CRITICAL - NEVER SAY "YES": When user just mentions a ride type (e.g., "Lumi Plus", "Lumi Go", "I'll go by Lumi Plus"), you MUST NEVER respond with "Yes" - instead check conversation history for locations (pickup, dropoff, stops), show booking details with those locations, then ask confirmation as a question like "Should I proceed with booking your ride?"
-   - After user confirms (yes/okay/proceed/book it/etc.) → Call book_ride_with_details immediately
+   - ABSOLUTELY CRITICAL - AFTER USER CONFIRMS: When user confirms with "Yes", "Okay", "Proceed", "Book it", etc. after you've asked for confirmation, you MUST IMMEDIATELY call book_ride_with_details with the details from the conversation history. DO NOT call list_ride_types again - the ride type was already validated in the previous turn. Extract pickup, dropoff, ride_type, and stops from conversation history and call book_ride_with_details directly.
    - NEVER say "Yes, I'll proceed" or "Let me book it for you" - always ask as a question
    - NEVER say "Yes" when user mentions a ride type - ALWAYS show booking details first (with locations from conversation history) and ask confirmation as a question
    - REMEMBER: User saying "Lumi Plus" or "I'll go by Lumi Plus" is them SELECTING a ride type - you must respond with booking details and a confirmation question, NOT "Yes"
@@ -571,7 +571,7 @@ Which ride type would you like?"
 User: "Lumi GO"
 Assistant: "Perfect! I'll book your ride from your current location to F7 Markaz, Islamabad using LUMI_GO. Should I proceed with booking your ride?"
 User: "Yes"
-Assistant: [Calls book_ride_with_details(dropoff_place="F7 Markaz Islamabad", ride_type="LUMI_GO")] "Your ride has been booked successfully..."
+Assistant: [Calls book_ride_with_details(dropoff_place="F7 Markaz Islamabad", ride_type="LUMI_GO") IMMEDIATELY - does NOT call list_ride_types again] "Your ride has been booked successfully..."
 
 Example 3 - User provides both locations with ride type:
 User: "Book a ride from Gaddafi Stadium to Johar Town on Lumi Pink"
@@ -731,6 +731,16 @@ SPECIAL QUERIES:
 - Ride status → Call check_active_ride immediately
 - Goodbye → Respond warmly, don't redirect
 
+ADDRESS FORMATTING (when presenting ride status):
+- When check_active_ride returns addresses, format them in a concise, user-friendly way
+- Extract meaningful location names: neighborhood/area name and city
+- Remove: Plus Codes (e.g., "QPGJ+X59"), country names ("Pakistan"), street details ("Main Road"), numbers with "near"
+- Examples:
+  * "QPGJ+X59, Officer Colony Main Road, Officers Colony Wah, Pakistan" → "Officers Colony Wah"
+  * "49, near UET, F block Taxila Gardens housing society, Taxila, Pakistan" → "Taxila Gardens, Taxila"
+  * "F-6 Markaz, Islamabad, Pakistan" → "F-6 Markaz, Islamabad"
+- Always present addresses in natural, readable format - just the location name and city if available
+
 CONVERSATION GUIDELINES:
 - Greet professionally when user greets you
 - Handle ride status, fare queries directly - don't redirect
@@ -847,7 +857,7 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"book_ride_with_details",
-      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (dropoff location and ride type), call this tool to automatically book the ride. CRITICAL: You MUST have dropoff_place and ride_type before calling this tool. pickup_place is OPTIONAL - if not provided, the system will automatically use the user's current location (fetched from backend API). If ride_type is missing, DO NOT call this tool - instead ask the user which ride type they want by calling list_ride_types first. IMPORTANT: Before calling this with a ride_type, FIRST call list_ride_types to validate the ride type exists. CRITICAL: Always use the COMPLETE location names from the conversation (e.g., 'Jamil Sweets, E-11' NOT just 'E-11', 'NSTP, H-12' NOT just 'NSTP'). Preserve the full location strings as mentioned by the user. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have dropoff_place and ride_type. If pickup_place is not provided, current location will be used automatically. ANTI-HALLUCINATION: NEVER say 'Your ride has been booked successfully' without calling this tool first. Wait for tool response - if {'ok': True}, report success; if {'ok': False}, report the EXACT error message from the tool. NEVER make up success or error messages.",
+      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (dropoff location and ride type), call this tool to automatically book the ride. CRITICAL: You MUST have dropoff_place and ride_type before calling this tool. pickup_place is OPTIONAL - if not provided, the system will automatically use the user's current location (fetched from backend API). CRITICAL - WHEN USER CONFIRMS: If the user has confirmed after you asked for confirmation (said 'Yes', 'Okay', 'Proceed', 'Book it', etc.), call this tool IMMEDIATELY using the details from conversation history. DO NOT call list_ride_types again - if the ride_type was already mentioned/selected in the conversation (e.g., user selected 'LUMI_GO' and you already called list_ride_types to validate it), use it directly. IMPORTANT: Only call list_ride_types FIRST if this is a NEW ride_type that hasn't been validated yet. But once validated in the conversation, when user confirms, call this tool directly. CRITICAL: Always use the COMPLETE location names from the conversation (e.g., 'Jamil Sweets, E-11' NOT just 'E-11', 'NSTP, H-12' NOT just 'NSTP'). Preserve the full location strings as mentioned by the user. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have dropoff_place and ride_type. If pickup_place is not provided, current location will be used automatically. ANTI-HALLUCINATION: NEVER say 'Your ride has been booked successfully' without calling this tool first. Wait for tool response - if {'ok': True}, report success; if {'ok': False}, report the EXACT error message from the tool. NEVER make up success or error messages.",
       "parameters":{
         "type":"object",
         "properties":{
@@ -898,7 +908,7 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"check_active_ride",
-      "description":"Check if the user has an active or ongoing ride. Use this when user asks 'is my ride booked', 'do I have an active ride', 'check my ride status', or similar questions. Returns the active ride details if one exists, or indicates no active ride.",
+      "description":"Check if the user has an active or ongoing ride. Use this when user asks 'is my ride booked', 'do I have an active ride', 'check my ride status', or similar questions. Returns the active ride details if one exists, or indicates no active ride. IMPORTANT: The tool returns full addresses from Google Maps. When presenting addresses to the user, format them in a concise, user-friendly way by extracting the meaningful neighborhood/area name and city. For example, 'QPGJ+X59, Officer Colony Main Road, Officers Colony Wah, Pakistan' should be presented as 'Officers Colony Wah', and '49, near UET, F block Taxila Gardens housing society, Taxila, Pakistan' should be presented as 'Taxila Gardens, Taxila'. Remove Plus Codes, country names, street details, and keep only the meaningful location identifiers.",
       "parameters":{"type":"object","properties":{}}
   }},
   { "type":"function", "function": {
@@ -1356,11 +1366,11 @@ async def tool_set_stops(stops):
         else:
             # Stop is already an object with coordinates
             norm.append({
-                "lat": s.get("lat") or s.get("latitude"),
-                "lng": s.get("lng") or s.get("longitude"),
+            "lat": s.get("lat") or s.get("latitude"),
+            "lng": s.get("lng") or s.get("longitude"),
                 "address": s.get("address") or s.get("place_name", ""),
-                "order": s.get("order", idx + 1),  # ensure order field exists
-            })
+            "order": s.get("order", idx + 1),  # ensure order field exists
+        })
     
     STATE["stops"] = norm
     return {"ok": True, "count": len(norm), "stops": norm}
@@ -1890,7 +1900,12 @@ async def tool_check_active_ride():
                     "ok": True,
                     "has_active_ride": True,
                     "active_ride": True,
-                    "message": f"Yes, you have an active {ride_type_name} ride from {pickup_address} to {dropoff_address} with {driver_name} for {fare_str}.{status_message}",
+                    "message": f"Yes, you have an active {ride_type_name} ride.",
+                    "pickup_address": pickup_address,  # Full address for LLM to format dynamically
+                    "dropoff_address": dropoff_address,  # Full address for LLM to format dynamically
+                    "driver_name": driver_name,
+                    "fare": fare_str,
+                    "status_message": status_message,
                     "ride_details": ride_data,
                     "rideId": ride_id,
                     "ride_status": ride_status,
