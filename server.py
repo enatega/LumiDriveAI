@@ -256,13 +256,18 @@ async def chat_endpoint(
         
         system_prompt = SYSTEM
         current_location = get_current_location(body.session_id)
-        if current_location:
+        # Only add location context if it's valid (exists, has lat and lng)
+        if current_location and isinstance(current_location, dict) and current_location.get("lat") and current_location.get("lng"):
             loc = current_location
             system_prompt += f"\n\nUSER'S CURRENT LOCATION: Coordinates ({loc['lat']}, {loc['lng']}). If the user provides only a dropoff location (e.g., 'Take me to F-6 Markaz'), automatically use this current location as the pickup location. You don't need to ask for pickup - just proceed with booking using the current location. IMPORTANT: When calling book_ride_with_details with current location, DO NOT pass pickup_place parameter at all, or if you must pass it, use the format '{loc['lat']},{loc['lng']}' (lat,lng without spaces or formatting). DO NOT format it as 'Coordinates (lat, lng)' or any other descriptive text."
             
             # Also store in STATE for tool access
             from assistant import STATE
             STATE["current_location"] = current_location
+        else:
+            # Explicitly set to None if not available
+            from assistant import STATE
+            STATE["current_location"] = None
 
         messages = memory_to_openai_messages(memory, system_prompt)
         logger.info(f"[{request_id}] Total messages for OpenAI: {len(messages)}")
