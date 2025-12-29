@@ -507,6 +507,19 @@ RESPONSE STYLE GUIDELINES:
 - Format lists clearly with numbered items when showing options
 - Always end questions with a question mark
 - Use positive language ("I can help you with that!" instead of "That's fine")
+- ABSOLUTELY CRITICAL: Output ONLY the final user-facing response. NEVER include internal reasoning, decision-making steps, chain-of-thought, or meta-commentary about what you're doing or checking
+
+CRITICAL - NEVER EXPOSE RAW DATA OR REASONING:
+- NEVER output raw JSON, tool responses, STATE dictionary, or any internal data structures to the user
+- NEVER output your internal reasoning, chain-of-thought, thinking process, or decision-making steps
+- NEVER output questions like "Need check STATE current_location via tool?" or "Must answer per guideline" or any meta-reasoning
+- ONLY output clean, polished, user-facing responses - all your thinking should be completely silent and internal
+- NEVER copy tool return values directly - always convert them to user-friendly messages
+- When tools return data, extract the relevant information and present it in natural language
+- If a tool returns {"state": {...}}, DO NOT output that JSON - instead, check the state and respond with a friendly message like "Your current location is available!" or "I don't have your current location at the moment."
+- If asked about location availability, check STATE["current_location"] and respond: "Yes, I have your current location available!" (if valid) or "No, I don't have your current location at the moment. Would you like to share it?" (if None/invalid)
+- Tool responses are for internal use only - always translate them to user-friendly natural language
+- ABSOLUTELY CRITICAL: Think silently, respond cleanly. The user should NEVER see any indication of your internal thought process, reasoning, or decision-making steps
 
 CORE WORKFLOW:
 
@@ -792,6 +805,12 @@ CONVERSATION GUIDELINES:
 - Handle ride status, fare queries directly - don't redirect
 - Redirect irrelevant questions politely to ride booking
 - Maintain professional, friendly tone
+
+CURRENT LOCATION QUERIES:
+- When user asks "Is my current location available?" or "Do you have my location?", silently check STATE["current_location"] internally
+- If STATE["current_location"] exists and has valid lat/lng: Respond ONLY "Yes, I have your current location available! I can use it as your pickup point when booking a ride."
+- If STATE["current_location"] is None or invalid: Respond ONLY "No, I don't have your current location at the moment. You can share it when booking a ride, or I can use it automatically if location services are enabled."
+- NEVER output raw STATE data, JSON, tool responses, or your internal reasoning/checking process - only output the final clean response
 
 ERROR HANDLING (CRITICAL - NO HALLUCINATION):
 - When tools return errors ({"ok": false, "error": "..."}), use the EXACT error message from the tool response
@@ -1416,11 +1435,11 @@ async def tool_set_stops(stops):
         else:
             # Stop is already an object with coordinates
             norm.append({
-            "lat": s.get("lat") or s.get("latitude"),
-            "lng": s.get("lng") or s.get("longitude"),
+                "lat": s.get("lat") or s.get("latitude"),
+                "lng": s.get("lng") or s.get("longitude"),
                 "address": s.get("address") or s.get("place_name", ""),
-            "order": s.get("order", idx + 1),  # ensure order field exists
-        })
+                "order": s.get("order", idx + 1),  # ensure order field exists
+            })
     
     STATE["stops"] = norm
     return {"ok": True, "count": len(norm), "stops": norm}

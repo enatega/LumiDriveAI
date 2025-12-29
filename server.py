@@ -263,11 +263,48 @@ async def chat_endpoint(
             
             # Also store in STATE for tool access
             from assistant import STATE
+            # Clear any stale STATE data first to prevent cross-session contamination
+            STATE["pickup"] = None
+            STATE["dropoff"] = None
+            STATE["pickup_address"] = None
+            STATE["destination_address"] = None
+            STATE["pickup_location"] = None
+            STATE["dropoff_location"] = None
+            STATE["stops"] = []
+            STATE["rideTypeName"] = None
+            STATE["rideTypeId"] = None
+            STATE["customerId"] = None
+            STATE["rideRequestId"] = None
+            STATE["rideId"] = None
+            STATE["sender_phone_number"] = None
+            STATE["receiver_phone_number"] = None
+            STATE["comments_for_courier"] = None
+            STATE["package_size"] = None
+            STATE["package_types"] = None
             STATE["current_location"] = current_location
         else:
-            # Explicitly set to None if not available
+            # Explicitly set to None if not available - IMPORTANT: Clear any stale location data
             from assistant import STATE
             STATE["current_location"] = None
+            # Also clear other STATE fields that might persist from previous sessions
+            # Reset STATE to initial values to prevent cross-session contamination
+            STATE["pickup"] = None
+            STATE["dropoff"] = None
+            STATE["pickup_address"] = None
+            STATE["destination_address"] = None
+            STATE["pickup_location"] = None
+            STATE["dropoff_location"] = None
+            STATE["stops"] = []
+            STATE["rideTypeName"] = None
+            STATE["rideTypeId"] = None
+            STATE["customerId"] = None
+            STATE["rideRequestId"] = None
+            STATE["rideId"] = None
+            STATE["sender_phone_number"] = None
+            STATE["receiver_phone_number"] = None
+            STATE["comments_for_courier"] = None
+            STATE["package_size"] = None
+            STATE["package_types"] = None
 
         messages = memory_to_openai_messages(memory, system_prompt)
         logger.info(f"[{request_id}] Total messages for OpenAI: {len(messages)}")
