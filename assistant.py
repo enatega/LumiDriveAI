@@ -543,12 +543,20 @@ CORE WORKFLOW:
    - Scenario D: User provides dropoff + ride_type in one message → Call list_ride_types FIRST → Match user's ride type → If match found, acknowledge selection and ask confirmation → Call book_ride_with_details
    - CRITICAL: Always call list_ride_types first, but be smart - if user already specified a ride type, match it and proceed instead of showing all options
 
-4. CONFIRMATION (ALWAYS USE QUESTION FORMAT):
+4. SCHEDULING (OPTIONAL - FOR FUTURE RIDES):
+   - DETECT SCHEDULING REQUESTS: If user mentions keywords like "schedule", "later", "tomorrow", "on [date]", "at [time]", "for [date/time]", "book for later", "schedule a ride", etc., they want to schedule the ride for later
+   - ASK FOR DATE AND TIME: When scheduling is detected, ask the user for the date and time they want the ride scheduled. Ask in a clear, user-friendly way: "What date and time would you like to schedule this ride for?"
+   - DATE/TIME FORMAT: Accept date/time in various natural formats (e.g., "tomorrow at 3 PM", "December 30 at 10:30 AM", "2025-01-15 14:30", "Monday at 9:00"). Convert the user's date/time to ISO8601 format (e.g., "2025-09-23T07:25:32.084Z") before calling book_ride_with_details. The format should be: YYYY-MM-DDTHH:MM:SS.mmmZ (UTC timezone).
+   - SCHEDULING WORKFLOW: The workflow is the same as regular booking, but when calling book_ride_with_details, include is_scheduled=True and scheduled_at with the ISO8601 formatted date/time
+   - EXAMPLE: User says "Book a ride to F7 Markaz for tomorrow at 2 PM" → Ask for confirmation with details including scheduling info → When confirmed, call book_ride_with_details(dropoff_place="F7 Markaz", ride_type="LUMI_GO", is_scheduled=True, scheduled_at="2025-12-30T14:00:00.000Z")
+   - IF SCHEDULING NOT MENTIONED: Default to immediate booking (is_scheduled=False, scheduled_at=None)
+
+5. CONFIRMATION (ALWAYS USE QUESTION FORMAT):
    - ALWAYS ask as a QUESTION, never make statements like "I'll proceed" or "Let me book"
    - Use question format: "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" or "Do you want me to proceed with booking?"
-   - Include booking details in the confirmation question: "I'll book your ride from [pickup] to [dropoff] using [ride_type]. Should I proceed with booking your ride?"
+   - Include booking details in the confirmation question: "I'll book your ride from [pickup] to [dropoff] using [ride_type]. Should I proceed with booking your ride?" (If scheduled: "I'll schedule your ride from [pickup] to [dropoff] using [ride_type] for [date/time]. Should I proceed?")
    - ABSOLUTELY CRITICAL - NEVER SAY "YES": When user just mentions a ride type (e.g., "Lumi Plus", "Lumi Go", "I'll go by Lumi Plus"), you MUST NEVER respond with "Yes" - instead check conversation history for locations (pickup, dropoff, stops), show booking details with those locations, then ask confirmation as a question like "Should I proceed with booking your ride?"
-   - ABSOLUTELY CRITICAL - AFTER USER CONFIRMS: When user confirms with "Yes", "Okay", "Proceed", "Book it", etc. after you've asked for confirmation, you MUST IMMEDIATELY call book_ride_with_details with the details from the conversation history. DO NOT call list_ride_types again - the ride type was already validated in the previous turn. Extract pickup, dropoff, ride_type, and stops from conversation history and call book_ride_with_details directly.
+   - ABSOLUTELY CRITICAL - AFTER USER CONFIRMS: When user confirms with "Yes", "Okay", "Proceed", "Book it", etc. after you've asked for confirmation, you MUST IMMEDIATELY call book_ride_with_details with the details from the conversation history. DO NOT call list_ride_types again - the ride type was already validated in the previous turn. Extract pickup, dropoff, ride_type, stops, is_scheduled, and scheduled_at from conversation history and call book_ride_with_details directly.
    - NEVER say "Yes, I'll proceed" or "Let me book it for you" - always ask as a question
    - NEVER say "Yes" when user mentions a ride type - ALWAYS show booking details first (with locations from conversation history) and ask confirmation as a question
    - REMEMBER: User saying "Lumi Plus" or "I'll go by Lumi Plus" is them SELECTING a ride type - you must respond with booking details and a confirmation question, NOT "Yes"
@@ -622,6 +630,24 @@ Example 8 - User just says ride type without context (CRITICAL):
 User: "Lumi Plus" (after locations were provided earlier in conversation)
 Assistant: "Yes" ❌ WRONG - You said "Yes" but should check conversation history for locations and show booking details
 CORRECT: [Check conversation history for previous locations] "Perfect! I'll book your ride from [previous pickup] to [previous dropoff] with [previous stops] using LUMI_PLUS. Should I proceed with booking your ride?" ✅
+
+Example 9 - Scheduling a ride for later:
+User: "Book a ride to F7 Markaz Islamabad for tomorrow at 3 PM"
+Assistant: [Calls list_ride_types FIRST] [Recognizes "tomorrow at 3 PM" as scheduling request] "I'll schedule a ride to F7 Markaz, Islamabad for tomorrow at 3 PM. Which ride type would you like?"
+User: "Lumi Go"
+Assistant: "Perfect! I'll schedule your ride from your current location to F7 Markaz, Islamabad using LUMI_GO for tomorrow at 3 PM. Should I proceed with scheduling your ride?"
+User: "Yes"
+Assistant: [Calls book_ride_with_details(dropoff_place="F7 Markaz Islamabad", ride_type="LUMI_GO", is_scheduled=True, scheduled_at="2025-12-30T15:00:00.000Z")] "Your ride has been scheduled successfully..."
+
+Example 10 - User asks to schedule after providing details:
+User: "Book a lumi go ride to F7 Markaz"
+Assistant: [Calls list_ride_types FIRST] [Matches "lumi go" to LUMI_GO] "I'll book a LUMI_GO ride for you to F7 Markaz, Islamabad. Should I proceed with booking your ride?"
+User: "Can I schedule it for later?"
+Assistant: "Of course! What date and time would you like to schedule this ride for?"
+User: "Tomorrow at 2 PM"
+Assistant: "Perfect! I'll schedule your ride from your current location to F7 Markaz, Islamabad using LUMI_GO for tomorrow at 2 PM. Should I proceed with scheduling your ride?"
+User: "Yes"
+Assistant: [Calls book_ride_with_details(dropoff_place="F7 Markaz Islamabad", ride_type="LUMI_GO", is_scheduled=True, scheduled_at="2025-12-30T14:00:00.000Z")] "Your ride has been scheduled successfully..."
 
 **WRONG WORKFLOWS - NEVER DO THESE:**
 
@@ -857,7 +883,7 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"book_ride_with_details",
-      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (dropoff location and ride type), call this tool to automatically book the ride. CRITICAL: You MUST have dropoff_place and ride_type before calling this tool. pickup_place is OPTIONAL - if not provided, the system will automatically use the user's current location (fetched from backend API). CRITICAL - WHEN USER CONFIRMS: If the user has confirmed after you asked for confirmation (said 'Yes', 'Okay', 'Proceed', 'Book it', etc.), call this tool IMMEDIATELY using the details from conversation history. DO NOT call list_ride_types again - if the ride_type was already mentioned/selected in the conversation (e.g., user selected 'LUMI_GO' and you already called list_ride_types to validate it), use it directly. IMPORTANT: Only call list_ride_types FIRST if this is a NEW ride_type that hasn't been validated yet. But once validated in the conversation, when user confirms, call this tool directly. CRITICAL: Always use the COMPLETE location names from the conversation (e.g., 'Jamil Sweets, E-11' NOT just 'E-11', 'NSTP, H-12' NOT just 'NSTP'). Preserve the full location strings as mentioned by the user. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have dropoff_place and ride_type. If pickup_place is not provided, current location will be used automatically. ANTI-HALLUCINATION: NEVER say 'Your ride has been booked successfully' without calling this tool first. Wait for tool response - if {'ok': True}, report success; if {'ok': False}, report the EXACT error message from the tool. NEVER make up success or error messages.",
+      "description":"AUTONOMOUS BOOKING: When you have collected ALL required booking details (dropoff location and ride type), call this tool to automatically book the ride. CRITICAL: You MUST have dropoff_place and ride_type before calling this tool. pickup_place is OPTIONAL - if not provided, the system will automatically use the user's current location (fetched from backend API). CRITICAL - WHEN USER CONFIRMS: If the user has confirmed after you asked for confirmation (said 'Yes', 'Okay', 'Proceed', 'Book it', etc.), call this tool IMMEDIATELY using the details from conversation history. DO NOT call list_ride_types again - if the ride_type was already mentioned/selected in the conversation (e.g., user selected 'LUMI_GO' and you already called list_ride_types to validate it), use it directly. IMPORTANT: Only call list_ride_types FIRST if this is a NEW ride_type that hasn't been validated yet. But once validated in the conversation, when user confirms, call this tool directly. SCHEDULING: If the user wants to schedule the ride for later (mentioned keywords like 'schedule', 'later', 'tomorrow', 'on [date]', 'at [time]'), set is_scheduled=True and provide scheduled_at in ISO8601 format (e.g., '2025-09-23T07:25:32.084Z'). Convert user's date/time to UTC ISO8601 format before passing. If scheduling not mentioned, default to immediate booking (is_scheduled=False, scheduled_at=None). CRITICAL: Always use the COMPLETE location names from the conversation (e.g., 'Jamil Sweets, E-11' NOT just 'E-11', 'NSTP, H-12' NOT just 'NSTP'). Preserve the full location strings as mentioned by the user. This tool will: 1) Resolve locations to coordinates if needed, 2) Set trip core, 3) Get fare quote, 4) Create ride request with scheduling if specified, 5) Wait for bids, 6) Automatically accept the best (lowest fare) bid, 7) Return success message. ONLY call this when you have dropoff_place and ride_type. If pickup_place is not provided, current location will be used automatically. ANTI-HALLUCINATION: NEVER say 'Your ride has been booked successfully' without calling this tool first. Wait for tool response - if {'ok': True}, report success; if {'ok': False}, report the EXACT error message from the tool. NEVER make up success or error messages.",
       "parameters":{
         "type":"object",
         "properties":{
@@ -866,8 +892,8 @@ tools = [
           "ride_type":{"type":"string","description":"Ride type name (e.g., 'LUMI_GO', 'Lumi GO', 'Courier', 'Bike', etc.)"},
           "stops":{"type":"array","items":{"type":"string"},"description":"Optional list of stop place names (e.g., ['F-6 Markaz, Islamabad', 'E-11, Islamabad']). Stops will be resolved to coordinates automatically."},
           "payment_via":{"type":"string","enum":["WALLET","CASH","CARD"],"description":"Payment method (optional, defaults to CASH)"},
-          "is_scheduled":{"type":"boolean","description":"Whether this is a scheduled ride (optional)"},
-          "scheduled_at":{"type":"string","description":"ISO8601 timestamp if is_scheduled is true (optional)"},
+          "is_scheduled":{"type":"boolean","description":"Whether this is a scheduled ride (optional). Set to true if user wants to schedule the ride for later. Must be true if scheduled_at is provided."},
+          "scheduled_at":{"type":"string","description":"ISO8601 timestamp in UTC format (e.g., '2025-09-23T07:25:32.084Z') for when the ride should be scheduled. Required if is_scheduled is true. Format: YYYY-MM-DDTHH:MM:SS.mmmZ. Convert user-provided date/time to UTC ISO8601 format before passing."},
           "is_family":{"type":"boolean","description":"Whether this is a family ride (optional)"}
         },
         "required":["dropoff_place","ride_type"]
@@ -1005,6 +1031,10 @@ STATE = {
   "last_bids": [],
   "last_quote": None,
   "computed_distance_km": None,
+
+  # scheduling
+  "is_scheduled": False,  # Whether the ride is scheduled for later
+  "scheduled_at": None,  # ISO8601 timestamp for scheduled rides
   "computed_duration_min": None,
 }
 
@@ -1464,7 +1494,13 @@ async def tool_set_ride_type(ride_type_name: str):
         }
     
     # AUTOMATICALLY book the ride - no user confirmation needed
-    booking_result = await tool_auto_book_ride()
+    # Use scheduling parameters from STATE if available
+    is_scheduled = STATE.get("is_scheduled", False)
+    scheduled_at = STATE.get("scheduled_at")
+    booking_result = await tool_auto_book_ride(
+        is_scheduled=is_scheduled,
+        scheduled_at=scheduled_at
+    )
     
     if not booking_result.get("ok"):
         # Pass through the actual error message from booking_result
@@ -2025,7 +2061,7 @@ async def tool_create_ride_and_wait_for_bids(payment_via=None, is_scheduled=Fals
         payment_via=payment_via or "CASH",
         is_hourly=False,
         is_scheduled=bool(is_scheduled),
-        scheduled_at=scheduled_at or _iso_in(15),
+        scheduled_at=scheduled_at if scheduled_at else (None if not is_scheduled else _iso_in(15)),
         offered_fair=final_offered_fair,  # Use recommended fare from quote
         is_family=bool(is_family),
         estimated_time=estimated_time,
@@ -2421,12 +2457,18 @@ async def tool_book_ride_with_details(
         pickup_place = f"{coord_match.group(1)},{coord_match.group(2)}"
         print(f"[DEBUG] Cleaned pickup coordinates: {pickup_place}")
     
+    # Store scheduling parameters in STATE for use by the workflow
+    STATE["is_scheduled"] = is_scheduled
+    STATE["scheduled_at"] = scheduled_at
+    
     # Log the parameters being passed for debugging
     print(f"[DEBUG] book_ride_with_details called with:")
     print(f"  pickup_place: '{pickup_place}'")
     print(f"  dropoff_place: '{dropoff_place}'")
     print(f"  ride_type: '{ride_type}'")
     print(f"  stops: {stops}")
+    print(f"  is_scheduled: {is_scheduled}")
+    print(f"  scheduled_at: {scheduled_at}")
     
     try:
         from booking_workflow import process_booking_with_details
@@ -2473,10 +2515,13 @@ async def tool_auto_book_ride(payment_via=None, is_scheduled=False, scheduled_at
         }
     
     # Step 1: Create ride and wait for bids (this already gets fare quote internally)
+    # Use scheduling parameters from STATE if not provided as function arguments
+    final_is_scheduled = is_scheduled if is_scheduled else STATE.get("is_scheduled", False)
+    final_scheduled_at = scheduled_at if scheduled_at else STATE.get("scheduled_at")
     create_result = await tool_create_ride_and_wait_for_bids(
         payment_via=payment_via,
-        is_scheduled=is_scheduled,
-        scheduled_at=scheduled_at,
+        is_scheduled=final_is_scheduled,
+        scheduled_at=final_scheduled_at,
         is_family=is_family
     )
     
