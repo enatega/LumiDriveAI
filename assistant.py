@@ -2534,10 +2534,18 @@ async def tool_book_ride_with_details(
     
     If pickup_place is not provided, uses current_location from STATE (fetched from backend API).
     """
+    # Store original pickup coordinates if we convert from current location
+    original_pickup_coords = None
+    
     # If pickup_place is not provided, try to use current location
     if not pickup_place:
         current_loc = STATE.get("current_location")
         if current_loc and current_loc.get("lat") and current_loc.get("lng"):
+            # Store original coordinates BEFORE converting to address
+            original_pickup_coords = {
+                "lat": current_loc['lat'],
+                "lng": current_loc['lng']
+            }
             # Convert current location coordinates to address string for better driver experience
             try:
                 from google_maps import get_google_maps_service
@@ -2551,17 +2559,21 @@ async def tool_book_ride_with_details(
                     if address and address != "Address not found":
                         pickup_place = address
                         print(f"[DEBUG] Using current location address as pickup: {pickup_place}")
+                        print(f"[DEBUG] Original coordinates preserved: {original_pickup_coords}")
                     else:
                         # Fallback to coordinates if address lookup fails
                         pickup_place = f"{current_loc['lat']},{current_loc['lng']}"
+                        original_pickup_coords = None  # No need to preserve if using coordinates directly
                         print(f"[DEBUG] Address lookup failed, using coordinates: {pickup_place}")
                 else:
                     # No API key, fallback to coordinates
                     pickup_place = f"{current_loc['lat']},{current_loc['lng']}"
+                    original_pickup_coords = None  # No need to preserve if using coordinates directly
                     print(f"[DEBUG] No API key, using coordinates: {pickup_place}")
             except Exception as e:
                 print(f"[DEBUG] Error converting coordinates to address: {e}, falling back to coordinates")
                 pickup_place = f"{current_loc['lat']},{current_loc['lng']}"
+                original_pickup_coords = None  # No need to preserve if using coordinates directly
         else:
             return {
                 "ok": False,
@@ -2571,11 +2583,13 @@ async def tool_book_ride_with_details(
     # If pickup_place looks like formatted coordinates (lat,lng format), try to convert to address
     import re
     coord_match = re.search(r"^([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)$", pickup_place.strip())
-    if coord_match:
+    if coord_match and not original_pickup_coords:  # Only convert if we haven't already stored original coords
         # It's in lat,lng format - convert to address for better driver experience
         try:
             lat = float(coord_match.group(1))
             lng = float(coord_match.group(2))
+            # Store original coordinates before converting
+            original_pickup_coords = {"lat": lat, "lng": lng}
             from google_maps import get_google_maps_service
             service = get_google_maps_service()
             if service.googleApiKey:
@@ -2584,18 +2598,23 @@ async def tool_book_ride_with_details(
                 if address and address != "Address not found":
                     pickup_place = address
                     print(f"[DEBUG] Converted coordinates to address: {pickup_place}")
+                    print(f"[DEBUG] Original coordinates preserved: {original_pickup_coords}")
                 else:
+                    original_pickup_coords = None  # No need to preserve if conversion failed
                     print(f"[DEBUG] Address lookup failed for coordinates, keeping coordinates format")
         except Exception as e:
+            original_pickup_coords = None  # No need to preserve if error occurred
             print(f"[DEBUG] Error converting coordinates to address: {e}, keeping coordinates format")
     
     # Handle formatted coordinate strings like "Coordinates (lat, lng)" or "(lat, lng)"
     coord_match_formatted = re.search(r"\(?\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)?", pickup_place)
-    if coord_match_formatted and ("Coordinates" in pickup_place or "coordinates" in pickup_place.lower()):
+    if coord_match_formatted and ("Coordinates" in pickup_place or "coordinates" in pickup_place.lower()) and not original_pickup_coords:
         # Extract coordinates and convert to address
         try:
             lat = float(coord_match_formatted.group(1))
             lng = float(coord_match_formatted.group(2))
+            # Store original coordinates before converting
+            original_pickup_coords = {"lat": lat, "lng": lng}
             from google_maps import get_google_maps_service
             service = get_google_maps_service()
             if service.googleApiKey:
@@ -2604,21 +2623,33 @@ async def tool_book_ride_with_details(
                 if address and address != "Address not found":
                     pickup_place = address
                     print(f"[DEBUG] Converted formatted coordinates to address: {pickup_place}")
+                    print(f"[DEBUG] Original coordinates preserved: {original_pickup_coords}")
                 else:
                     # Extract clean lat,lng format as fallback
                     pickup_place = f"{lat},{lng}"
+                    original_pickup_coords = None  # No need to preserve if conversion failed
                     print(f"[DEBUG] Address lookup failed, using clean coordinates: {pickup_place}")
             else:
                 # Extract clean lat,lng format as fallback
                 pickup_place = f"{coord_match_formatted.group(1)},{coord_match_formatted.group(2)}"
+                original_pickup_coords = None  # No need to preserve if no API key
                 print(f"[DEBUG] No API key, using clean coordinates: {pickup_place}")
         except Exception as e:
+            original_pickup_coords = None  # No need to preserve if error occurred
             print(f"[DEBUG] Error converting formatted coordinates: {e}, using clean format")
             pickup_place = f"{coord_match_formatted.group(1)},{coord_match_formatted.group(2)}"
     
     # Store scheduling parameters in STATE for use by the workflow
     STATE["is_scheduled"] = is_scheduled
     STATE["scheduled_at"] = scheduled_at
+    
+    # Store original pickup coordinates in STATE if we converted from coordinates to address
+    # This allows the workflow to use exact coordinates instead of re-resolving the address
+    if original_pickup_coords:
+        STATE["original_pickup_coords"] = original_pickup_coords
+        print(f"[DEBUG] Stored original pickup coordinates in STATE: {original_pickup_coords}")
+    else:
+        STATE["original_pickup_coords"] = None
     
     # Log the parameters being passed for debugging
     print(f"[DEBUG] book_ride_with_details called with:")
@@ -2628,6 +2659,8 @@ async def tool_book_ride_with_details(
     print(f"  stops: {stops}")
     print(f"  is_scheduled: {is_scheduled}")
     print(f"  scheduled_at: {scheduled_at}")
+    if original_pickup_coords:
+        print(f"  original_pickup_coords: {original_pickup_coords}")
     
     try:
         from booking_workflow import process_booking_with_details

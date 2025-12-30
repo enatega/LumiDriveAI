@@ -106,9 +106,21 @@ async def resolve_locations(state: BookingState) -> BookingState:
     error = None
     
     if pickup_place:
+        # CRITICAL: Check if we have original coordinates stored in STATE (from coordinate-to-address conversion)
+        # This ensures we use the exact original coordinates instead of re-resolving, which can change coordinates
+        original_pickup_coords = STATE.get("original_pickup_coords")
+        if original_pickup_coords and isinstance(original_pickup_coords, dict) and "lat" in original_pickup_coords and "lng" in original_pickup_coords:
+            pickup_coords = {
+                "lat": original_pickup_coords["lat"],
+                "lng": original_pickup_coords["lng"],
+                "address": pickup_place,  # Use the address string for display
+            }
+            print(f"[DEBUG] Using original pickup coordinates from STATE: {pickup_coords}")
+            # Clear the stored coordinates after use to prevent reuse
+            STATE["original_pickup_coords"] = None
         # Check if pickup_place is already coordinates
-        coords = _parse_coordinates(pickup_place)
-        if coords:
+        elif _parse_coordinates(pickup_place):
+            coords = _parse_coordinates(pickup_place)
             # Already coordinates, use them directly
             pickup_coords = {
                 "lat": coords["lat"],
