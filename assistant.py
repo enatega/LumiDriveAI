@@ -2537,23 +2537,84 @@ async def tool_book_ride_with_details(
     # If pickup_place is not provided, try to use current location
     if not pickup_place:
         current_loc = STATE.get("current_location")
-        if current_loc:
-            # Use current location coordinates as pickup in "lat,lng" format
-            pickup_place = f"{current_loc['lat']},{current_loc['lng']}"
-            print(f"[DEBUG] Using current location as pickup: {pickup_place}")
+        if current_loc and current_loc.get("lat") and current_loc.get("lng"):
+            # Convert current location coordinates to address string for better driver experience
+            try:
+                from google_maps import get_google_maps_service
+                service = get_google_maps_service()
+                if service.googleApiKey:
+                    address_result = await service.fetchAddressFromCoordinates(
+                        current_loc['lat'], 
+                        current_loc['lng']
+                    )
+                    address = address_result.get("address")
+                    if address and address != "Address not found":
+                        pickup_place = address
+                        print(f"[DEBUG] Using current location address as pickup: {pickup_place}")
+                    else:
+                        # Fallback to coordinates if address lookup fails
+                        pickup_place = f"{current_loc['lat']},{current_loc['lng']}"
+                        print(f"[DEBUG] Address lookup failed, using coordinates: {pickup_place}")
+                else:
+                    # No API key, fallback to coordinates
+                    pickup_place = f"{current_loc['lat']},{current_loc['lng']}"
+                    print(f"[DEBUG] No API key, using coordinates: {pickup_place}")
+            except Exception as e:
+                print(f"[DEBUG] Error converting coordinates to address: {e}, falling back to coordinates")
+                pickup_place = f"{current_loc['lat']},{current_loc['lng']}"
         else:
             return {
                 "ok": False,
                 "error": "Pickup location is required. Please provide pickup location or ensure location services are enabled.",
             }
     
-    # If pickup_place looks like formatted coordinates, extract just the lat,lng
+    # If pickup_place looks like formatted coordinates (lat,lng format), try to convert to address
     import re
-    coord_match = re.search(r"\(?\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)?", pickup_place)
-    if coord_match and ("Coordinates" in pickup_place or "coordinates" in pickup_place.lower()):
-        # Extract clean lat,lng format
-        pickup_place = f"{coord_match.group(1)},{coord_match.group(2)}"
-        print(f"[DEBUG] Cleaned pickup coordinates: {pickup_place}")
+    coord_match = re.search(r"^([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)$", pickup_place.strip())
+    if coord_match:
+        # It's in lat,lng format - convert to address for better driver experience
+        try:
+            lat = float(coord_match.group(1))
+            lng = float(coord_match.group(2))
+            from google_maps import get_google_maps_service
+            service = get_google_maps_service()
+            if service.googleApiKey:
+                address_result = await service.fetchAddressFromCoordinates(lat, lng)
+                address = address_result.get("address")
+                if address and address != "Address not found":
+                    pickup_place = address
+                    print(f"[DEBUG] Converted coordinates to address: {pickup_place}")
+                else:
+                    print(f"[DEBUG] Address lookup failed for coordinates, keeping coordinates format")
+        except Exception as e:
+            print(f"[DEBUG] Error converting coordinates to address: {e}, keeping coordinates format")
+    
+    # Handle formatted coordinate strings like "Coordinates (lat, lng)" or "(lat, lng)"
+    coord_match_formatted = re.search(r"\(?\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)?", pickup_place)
+    if coord_match_formatted and ("Coordinates" in pickup_place or "coordinates" in pickup_place.lower()):
+        # Extract coordinates and convert to address
+        try:
+            lat = float(coord_match_formatted.group(1))
+            lng = float(coord_match_formatted.group(2))
+            from google_maps import get_google_maps_service
+            service = get_google_maps_service()
+            if service.googleApiKey:
+                address_result = await service.fetchAddressFromCoordinates(lat, lng)
+                address = address_result.get("address")
+                if address and address != "Address not found":
+                    pickup_place = address
+                    print(f"[DEBUG] Converted formatted coordinates to address: {pickup_place}")
+                else:
+                    # Extract clean lat,lng format as fallback
+                    pickup_place = f"{lat},{lng}"
+                    print(f"[DEBUG] Address lookup failed, using clean coordinates: {pickup_place}")
+            else:
+                # Extract clean lat,lng format as fallback
+                pickup_place = f"{coord_match_formatted.group(1)},{coord_match_formatted.group(2)}"
+                print(f"[DEBUG] No API key, using clean coordinates: {pickup_place}")
+        except Exception as e:
+            print(f"[DEBUG] Error converting formatted coordinates: {e}, using clean format")
+            pickup_place = f"{coord_match_formatted.group(1)},{coord_match_formatted.group(2)}"
     
     # Store scheduling parameters in STATE for use by the workflow
     STATE["is_scheduled"] = is_scheduled
