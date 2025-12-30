@@ -125,6 +125,9 @@ async def _run_tools_for_message(msg, messages: List[Dict[str, Any]], user_locat
             elif tc.function.name == "resolve_place_to_coordinates":
                 from assistant import tool_resolve_place_to_coordinates
                 result = await tool_resolve_place_to_coordinates(**args)
+            elif tc.function.name == "get_address_from_coordinates":
+                from assistant import tool_get_address_from_coordinates
+                result = await tool_get_address_from_coordinates(**args)
             elif tc.function.name == "set_ride_type":
                 from assistant import tool_set_ride_type
                 result = await tool_set_ride_type(**args)
@@ -259,7 +262,7 @@ async def chat_endpoint(
         # Only add location context if it's valid (exists, has lat and lng)
         if current_location and isinstance(current_location, dict) and current_location.get("lat") and current_location.get("lng"):
             loc = current_location
-            system_prompt += f"\n\nUSER'S CURRENT LOCATION: Coordinates ({loc['lat']}, {loc['lng']}). If the user provides only a dropoff location (e.g., 'Take me to F-6 Markaz'), automatically use this current location as the pickup location. You don't need to ask for pickup - just proceed with booking using the current location. IMPORTANT: When calling book_ride_with_details with current location, DO NOT pass pickup_place parameter at all, or if you must pass it, use the format '{loc['lat']},{loc['lng']}' (lat,lng without spaces or formatting). DO NOT format it as 'Coordinates (lat, lng)' or any other descriptive text."
+            system_prompt += f"\n\nUSER'S CURRENT LOCATION: Coordinates ({loc['lat']}, {loc['lng']}). If the user asks 'What's my current location?' or 'What is my location?', you MUST display these exact coordinates to the user in a friendly format (e.g., 'Your current location is at coordinates ({loc['lat']}, {loc['lng']})'). If the user provides only a dropoff location (e.g., 'Take me to F-6 Markaz'), automatically use this current location as the pickup location. You don't need to ask for pickup - just proceed with booking using the current location. IMPORTANT: When calling book_ride_with_details with current location, DO NOT pass pickup_place parameter at all, or if you must pass it, use the format '{loc['lat']},{loc['lng']}' (lat,lng without spaces or formatting). DO NOT format it as 'Coordinates (lat, lng)' or any other descriptive text."
             
             # Also store in STATE for tool access
             from assistant import STATE
