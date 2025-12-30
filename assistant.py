@@ -509,6 +509,14 @@ RESPONSE STYLE GUIDELINES:
 - Use positive language ("I can help you with that!" instead of "That's fine")
 - ABSOLUTELY CRITICAL: Output ONLY the final user-facing response. NEVER include internal reasoning, decision-making steps, chain-of-thought, or meta-commentary about what you're doing or checking
 
+CURRENCY DISPLAY (CRITICAL):
+- When displaying fare information, ALWAYS use the currency CODE (e.g., "QAR", "PKR", "USD") instead of the currency SYMBOL (e.g., "QR", "Rs", "$")
+- Format fares as: "[CURRENCY_CODE] [amount]" (e.g., "QAR 21.64", "PKR 500", "USD 10.50")
+- NEVER use currency symbols like "QR", "Rs", "$" - always use the 3-letter currency code
+- Example: "1) LUMI_GO: QAR 21.64" ✅ CORRECT
+- Example: "1) LUMI_GO: QR 21.64" ❌ WRONG - Don't use symbol, use code
+- The tool responses include both "currency" (code) and "currencySymbol" (symbol) fields - ALWAYS use the "currency" field (code) for display
+
 CRITICAL - NEVER EXPOSE RAW DATA OR REASONING:
 - NEVER output raw JSON, tool responses, STATE dictionary, or any internal data structures to the user
 - NEVER output your internal reasoning, chain-of-thought, thinking process, or decision-making steps
@@ -970,14 +978,14 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"get_fare_for_locations",
-      "description":"CRITICAL: Get fare quote for specific pickup and dropoff locations. Use this IMMEDIATELY when user asks about fare in ANY format (e.g., 'what is the fare from X to Y', 'fare for going from X to Y', 'fare for going to X to Y', 'what is the fare for going to X to Y', 'cheapest fare from X to Y'). Extract pickup and dropoff locations from the user's message and call this tool DIRECTLY. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT say 'I'll check' or 'Let me get' - just call the tool immediately. This tool automatically resolves locations using Google Maps API (same as booking workflow), calculates distance/duration, and returns fare quotes for all ride types. This is a standalone API query that works independently without setting trip core.",
+      "description":"CRITICAL: Get fare quote for specific pickup and dropoff locations. Use this IMMEDIATELY when user asks about fare in ANY format (e.g., 'what is the fare from X to Y', 'fare for going from X to Y', 'fare for going to X to Y', 'what is the fare for going to X to Y', 'cheapest fare from X to Y', 'what's the fare for all the rides'). Extract pickup and dropoff locations from the user's message and call this tool DIRECTLY. DO NOT ask for confirmation. DO NOT try to set locations first. DO NOT say 'I'll check' or 'Let me get' - just call the tool immediately. IMPORTANT: If user doesn't provide pickup location (e.g., 'fare to F6 Markaz' or 'what's the fare for all the rides'), leave pickup_place empty or don't provide it - the tool will automatically use current_location from STATE (converts coordinates to address first). If user provides only dropoff, use current_location as pickup. This tool automatically handles both place names and coordinate strings, resolves locations using Google Maps API, calculates distance/duration, and returns fare quotes for all ride types. This is a standalone API query that works independently without setting trip core.",
       "parameters":{
         "type":"object",
         "properties":{
-          "pickup_place":{"type":"string","description":"Pickup location extracted from user's message (e.g., 'F7 Markaz Islamabad', 'Jameel Sweets, E-11, Islamabad'). Use the exact location name the user provided."},
+          "pickup_place":{"type":"string","description":"Pickup location extracted from user's message (e.g., 'F7 Markaz Islamabad', 'Jameel Sweets, E-11, Islamabad'). If user doesn't provide pickup, leave this empty or don't provide it - the tool will use current_location automatically. Use the exact location name the user provided."},
           "dropoff_place":{"type":"string","description":"Dropoff location extracted from user's message (e.g., 'F6 Markaz Islamabad', 'NSTP, H-12, Islamabad'). Use the exact location name the user provided."}
         },
-        "required":["pickup_place","dropoff_place"]
+        "required":["dropoff_place"]
       }
   }},
   { "type":"function", "function": {
@@ -1800,29 +1808,146 @@ async def tool_get_fare_quote():
         "selected_currency": STATE.get("currency"),
     }
 
-async def tool_get_fare_for_locations(pickup_place: str, dropoff_place: str):
+async def tool_get_fare_for_locations(pickup_place: str = None, dropoff_place: str = None):
     """
     Get fare quote for specific locations WITHOUT setting trip core.
     This is a standalone API query for when user asks "what is the fare from X to Y".
+    
+    Handles both place names and coordinate strings (lat,lng format).
+    If current_location is used, converts coordinates to address first.
     """
+    import re
+    
+    # Helper function to parse coordinates from string
+    def _parse_coordinates(place_str: str | None) -> dict | None:
+        """Parse coordinates from string formats like 'lat,lng' or 'Coordinates (lat, lng)'"""
+        if not place_str or not isinstance(place_str, str):
+            return None
+        # Try to extract lat,lng from various formats
+        patterns = [
+            r"^([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)$",  # lat,lng
+            r"\(?\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)?",  # (lat, lng)
+        ]
+        try:
+            place_str_clean = place_str.strip()
+        except AttributeError:
+            return None
+        for pattern in patterns:
+            match = re.search(pattern, place_str_clean)
+            if match:
+                try:
+                    lat = float(match.group(1))
+                    lng = float(match.group(2))
+                    # Validate reasonable coordinate ranges
+                    if -90 <= lat <= 90 and -180 <= lng <= 180:
+                        return {"lat": lat, "lng": lng}
+                except (ValueError, IndexError):
+                    continue
+        return None
+    
     try:
-        # Resolve locations to coordinates
-        pickup_result = await tool_resolve_place_to_coordinates(pickup_place)
-        if not pickup_result.get("ok"):
+        # Handle pickup location
+        pickup_coords = None
+        pickup_address = None
+        
+        # Check if pickup_place is already coordinates (only if it's provided)
+        parsed_coords = _parse_coordinates(pickup_place) if pickup_place else None
+        if parsed_coords:
+            # It's coordinates - use them directly
+            pickup_coords = parsed_coords
+            # Try to get address for better display
+            try:
+                from google_maps import get_google_maps_service
+                service = get_google_maps_service()
+                if service.googleApiKey:
+                    address_result = await service.fetchAddressFromCoordinates(parsed_coords["lat"], parsed_coords["lng"])
+                    pickup_address = address_result.get("address", pickup_place)
+            except Exception:
+                pickup_address = pickup_place
+        else:
+            # Check if pickup_place is missing and we should use current_location
+            if not pickup_place or pickup_place.strip() == "":
+                current_loc = STATE.get("current_location")
+                if current_loc and current_loc.get("lat") and current_loc.get("lng"):
+                    # Convert current location to address first
+                    try:
+                        from google_maps import get_google_maps_service
+                        service = get_google_maps_service()
+                        if service.googleApiKey:
+                            address_result = await service.fetchAddressFromCoordinates(
+                                current_loc['lat'], 
+                                current_loc['lng']
+                            )
+                            pickup_address = address_result.get("address")
+                            if pickup_address and pickup_address != "Address not found":
+                                pickup_place = pickup_address
+                                # Use original coordinates directly (don't re-resolve to avoid coordinate drift)
+                                pickup_coords = {"lat": current_loc['lat'], "lng": current_loc['lng']}
+                                pickup_address = pickup_address
+                                print(f"[DEBUG] Using current location address: {pickup_address}, coordinates: {pickup_coords}")
+                            else:
+                                # Fallback: use current location coordinates directly
+                                pickup_coords = {"lat": current_loc['lat'], "lng": current_loc['lng']}
+                                pickup_address = f"{current_loc['lat']},{current_loc['lng']}"
+                        else:
+                            # No API key, use coordinates directly
+                            pickup_coords = {"lat": current_loc['lat'], "lng": current_loc['lng']}
+                            pickup_address = f"{current_loc['lat']},{current_loc['lng']}"
+                    except Exception as e:
+                        print(f"[DEBUG] Error converting current location to address: {e}")
+                        # Fallback: use current location coordinates directly
+                        pickup_coords = {"lat": current_loc['lat'], "lng": current_loc['lng']}
+                        pickup_address = f"{current_loc['lat']},{current_loc['lng']}"
+                else:
+                    return {
+                        "ok": False,
+                        "error": "Pickup location is required. Please provide pickup location or ensure location services are enabled.",
+                    }
+            else:
+                # Resolve place name to coordinates
+                pickup_result = await tool_resolve_place_to_coordinates(pickup_place)
+                if not pickup_result.get("ok"):
+                    return {
+                        "ok": False,
+                        "error": pickup_result.get("error", "Failed to resolve pickup location."),
+                    }
+                pickup_coords = {"lat": pickup_result["lat"], "lng": pickup_result["lng"]}
+                pickup_address = pickup_result.get("address", pickup_place)
+        
+        # Handle dropoff location
+        if not dropoff_place or (isinstance(dropoff_place, str) and dropoff_place.strip() == ""):
             return {
                 "ok": False,
-                "error": pickup_result.get("error", "Failed to resolve pickup location."),
+                "error": "Dropoff location is required.",
             }
         
-        dropoff_result = await tool_resolve_place_to_coordinates(dropoff_place)
-        if not dropoff_result.get("ok"):
-            return {
-                "ok": False,
-                "error": dropoff_result.get("error", "Failed to resolve dropoff location."),
-            }
+        dropoff_coords = None
+        dropoff_address = None
         
-        pickup_coords = {"lat": pickup_result["lat"], "lng": pickup_result["lng"]}
-        dropoff_coords = {"lat": dropoff_result["lat"], "lng": dropoff_result["lng"]}
+        # Check if dropoff_place is already coordinates
+        parsed_coords = _parse_coordinates(dropoff_place)
+        if parsed_coords:
+            # It's coordinates - use them directly
+            dropoff_coords = parsed_coords
+            # Try to get address for better display
+            try:
+                from google_maps import get_google_maps_service
+                service = get_google_maps_service()
+                if service.googleApiKey:
+                    address_result = await service.fetchAddressFromCoordinates(parsed_coords["lat"], parsed_coords["lng"])
+                    dropoff_address = address_result.get("address", dropoff_place)
+            except Exception:
+                dropoff_address = dropoff_place
+        else:
+            # Resolve place name to coordinates
+            dropoff_result = await tool_resolve_place_to_coordinates(dropoff_place)
+            if not dropoff_result.get("ok"):
+                return {
+                    "ok": False,
+                    "error": dropoff_result.get("error", "Failed to resolve dropoff location."),
+                }
+            dropoff_coords = {"lat": dropoff_result["lat"], "lng": dropoff_result["lng"]}
+            dropoff_address = dropoff_result.get("address", dropoff_place)
         
         # Calculate distance/duration using Google Maps API
         try:
