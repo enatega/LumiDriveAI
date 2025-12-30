@@ -807,16 +807,18 @@ CONVERSATION GUIDELINES:
 - Maintain professional, friendly tone
 - ACCURACY IS CRITICAL: If you don't know something or don't have information, say so accurately. NEVER guess, assume, or make up information. Check STATE, check conversation history, check tool responses - if information is not available, clearly state that you don't have it rather than guessing
 
-CURRENT LOCATION QUERIES (BE ACCURATE - CHECK STATE, DON'T GUESS):
-- ALWAYS check STATE["current_location"] to determine if location is available - NEVER guess or assume
+CURRENT LOCATION QUERIES (BE ACCURATE - CHECK STATE, DON'T GUESS OR HALLUCINATE):
+- ALWAYS check STATE["current_location"] to determine if location is available - NEVER guess, assume, or hallucinate coordinates
+- CRITICAL ANTI-HALLUCINATION RULE: If STATE["current_location"] is None, missing, or doesn't have valid "lat" and "lng" values, you MUST respond that you don't have the location. NEVER call get_address_from_coordinates with guessed, assumed, or hallucinated coordinates. NEVER use coordinates from previous sessions, memory, or any source other than STATE["current_location"].
 - When user asks "Do you have my location?" or "Is my current location available?":
   * If STATE["current_location"] exists and has valid lat/lng: Respond "Yes, I have your current location available! I can use it as your pickup point when booking a ride."
   * If STATE["current_location"] is None or invalid: Respond "No, I don't have your current location at the moment. You can share it when booking a ride, or I can use it automatically if location services are enabled."
 - When user asks "What's my current location?" or "What is my location?" or "Show me my location":
-  * CRITICAL - YOU MUST CALL THE TOOL: If STATE["current_location"] exists and has valid lat/lng, you MUST call the get_address_from_coordinates tool with lat=STATE["current_location"]["lat"] and lng=STATE["current_location"]["lng"]. DO NOT display raw coordinates like "(33.6978, 72.9800)" directly to the user. After the tool returns the address, display it to the user in a friendly format, e.g., "Your current location is at [address]" or "You're currently at [address]".
-  * If STATE["current_location"] is None or invalid: Respond "I don't have your current location at the moment. You can share it when booking a ride, or I can use it automatically if location services are enabled."
-- ABSOLUTELY CRITICAL: When the user asks "What's my current location?", you MUST call get_address_from_coordinates tool - NEVER display raw coordinates. The user expects a readable address, not numbers like "(33.6978, 72.9800)".
-- CRITICAL: Always check STATE["current_location"] - if it's None or missing, say so. If it exists, use the get_address_from_coordinates tool to get a readable address instead of showing raw coordinates. NEVER guess or assume location availability.
+  * FIRST: Check STATE["current_location"] - it MUST exist AND have valid "lat" and "lng" values
+  * If STATE["current_location"] exists and has valid lat/lng: Call the get_address_from_coordinates tool with lat=STATE["current_location"]["lat"] and lng=STATE["current_location"]["lng"]. After the tool returns the address, display it to the user in a friendly format, e.g., "Your current location is at [address]" or "You're currently at [address]".
+  * If STATE["current_location"] is None, missing, or invalid: Respond "I don't have your current location at the moment. You can share it when booking a ride, or I can use it automatically if location services are enabled." DO NOT call get_address_from_coordinates. DO NOT guess or hallucinate coordinates.
+- ABSOLUTELY CRITICAL ANTI-HALLUCINATION: NEVER call get_address_from_coordinates if STATE["current_location"] is None or invalid. NEVER use coordinates from memory, previous sessions, or any other source. If you don't have valid coordinates in STATE["current_location"], you MUST say you don't have the location - do NOT guess or hallucinate.
+- CRITICAL: Always check STATE["current_location"] - if it's None or missing, say so. If it exists and has valid lat/lng, use the get_address_from_coordinates tool to get a readable address. NEVER guess or assume location availability.
 - NEVER output raw STATE data, JSON, tool responses, or your internal reasoning/checking process - only output the final clean response
 
 ERROR HANDLING (CRITICAL - NO HALLUCINATION):
@@ -980,12 +982,12 @@ tools = [
   }},
   { "type":"function", "function": {
       "name":"get_address_from_coordinates",
-      "description":"CRITICAL: Convert coordinates (latitude, longitude) to a human-readable address using Google Maps reverse geocoding. You MUST call this tool when the user asks 'What's my current location?' or 'What is my location?' - DO NOT display raw coordinates directly to the user. Get the lat/lng from STATE['current_location'] and call this tool to convert them to a readable address string. The tool takes latitude and longitude coordinates and returns a formatted address string that you should display to the user.",
+      "description":"CRITICAL: Convert coordinates (latitude, longitude) to a human-readable address using Google Maps reverse geocoding. ONLY call this tool when STATE['current_location'] exists AND has valid 'lat' and 'lng' values. NEVER call this tool if STATE['current_location'] is None, missing, or invalid. NEVER hallucinate or guess coordinates - if you don't have valid coordinates in STATE['current_location'], respond that you don't have the location instead of calling this tool. The tool takes latitude and longitude coordinates and returns a formatted address string that you should display to the user.",
       "parameters":{
         "type":"object",
         "properties":{
-          "lat":{"type":"number","description":"Latitude coordinate from STATE['current_location']['lat']"},
-          "lng":{"type":"number","description":"Longitude coordinate from STATE['current_location']['lng']"}
+          "lat":{"type":"number","description":"Latitude coordinate from STATE['current_location']['lat'] - ONLY use if STATE['current_location'] exists and has valid lat"},
+          "lng":{"type":"number","description":"Longitude coordinate from STATE['current_location']['lng'] - ONLY use if STATE['current_location'] exists and has valid lng"}
         },
         "required":["lat","lng"]
       }
@@ -1309,7 +1311,35 @@ async def tool_get_address_from_coordinates(lat: float, lng: float):
     """
     Convert coordinates to a human-readable address using Google Maps reverse geocoding.
     Returns the formatted address string.
+    
+    CRITICAL: This tool should ONLY be called when STATE["current_location"] exists and has valid lat/lng.
+    The tool validates that the provided coordinates match STATE["current_location"] to prevent hallucination.
     """
+    # CRITICAL ANTI-HALLUCINATION CHECK: Verify coordinates match STATE["current_location"]
+    current_loc = STATE.get("current_location")
+    if not current_loc or not isinstance(current_loc, dict):
+        return {
+            "ok": False,
+            "error": "Current location is not available. STATE['current_location'] is None or invalid. Do not call this tool when location is unavailable.",
+        }
+    
+    if "lat" not in current_loc or "lng" not in current_loc:
+        return {
+            "ok": False,
+            "error": "Current location is not available. STATE['current_location'] does not have valid lat/lng values. Do not call this tool when location is unavailable.",
+        }
+    
+    # Verify the provided coordinates match STATE (with small tolerance for floating point)
+    state_lat = current_loc["lat"]
+    state_lng = current_loc["lng"]
+    tolerance = 0.0001  # Small tolerance for floating point comparison
+    
+    if abs(lat - state_lat) > tolerance or abs(lng - state_lng) > tolerance:
+        return {
+            "ok": False,
+            "error": f"Provided coordinates ({lat}, {lng}) do not match STATE['current_location'] ({state_lat}, {state_lng}). Do not use guessed or hallucinated coordinates. Only use coordinates from STATE['current_location'].",
+        }
+    
     try:
         from google_maps import get_google_maps_service
         service = get_google_maps_service()
