@@ -304,6 +304,44 @@ class GoogleMapsService:
         except Exception as error:
             print(f"Error fetching address: {error}")
             return {"address": "Address not found"}
+    
+    async def getTimezoneFromCoordinates(self, lat: float, lng: float) -> Dict[str, str]:
+        """
+        Get timezone information for given coordinates using Google Maps Time Zone API.
+        
+        Args:
+            lat: Latitude
+            lng: Longitude
+        
+        Returns:
+            {"timeZoneId": str, "timeZoneName": str} or empty dict if error
+        """
+        if not self.googleApiKey:
+            return {}
+        
+        try:
+            import time
+            timestamp = int(time.time())  # Current timestamp
+            url = f"https://maps.googleapis.com/maps/api/timezone/json?location={lat},{lng}&timestamp={timestamp}&key={self.googleApiKey}"
+            
+            import httpx
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+                res = await client.get(url)
+                res.raise_for_status()
+                data = res.json()
+            
+            if data.get("status") == "OK":
+                return {
+                    "timeZoneId": data.get("timeZoneId", ""),
+                    "timeZoneName": data.get("timeZoneName", ""),
+                }
+            else:
+                print(f"⚠️ Timezone API error: {data.get('status')}, {data.get('errorMessage')}")
+                return {}
+        
+        except Exception as error:
+            print(f"⚠️ Error getting timezone: {error}")
+            return {}
 
 
 # Global instance
@@ -377,8 +415,8 @@ async def calculate_distance_duration_google(
             raise ValueError(f"Invalid result from getDistanceMatrix: {result}")
     
     except Exception as e:
-        print(f"⚠️ Google Maps API error: {e}")
-        import traceback
-        traceback.print_exc()
-        raise ValueError(f"Google Maps API failed: {str(e)}")
+            print(f"⚠️ Google Maps API error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise ValueError(f"Google Maps API failed: {str(e)}")
 

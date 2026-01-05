@@ -581,15 +581,15 @@ CORE WORKFLOW:
 4. SCHEDULING (OPTIONAL - FOR FUTURE RIDES):
    - DETECT SCHEDULING REQUESTS: If user mentions keywords like "schedule", "later", "tomorrow", "on [date]", "at [time]", "for [date/time]", "book for later", "schedule a ride", etc., they want to schedule the ride for later
    - ASK FOR DATE AND TIME: When scheduling is detected, ask the user for the date and time they want the ride scheduled. Ask in a clear, user-friendly way: "What date and time would you like to schedule this ride for?"
-   - DATE/TIME FORMAT: Accept date/time in various natural formats (e.g., "tomorrow at 3 PM", "December 30 at 10:30 AM", "2025-01-15 14:30", "Monday at 9:00"). Convert the user's date/time to ISO8601 format (e.g., "2025-09-23T07:25:32.084Z") before calling book_ride_with_details. The format should be: YYYY-MM-DDTHH:MM:SS.mmmZ (UTC timezone).
-   - SCHEDULING WORKFLOW: The workflow is the same as regular booking, but when calling book_ride_with_details, include is_scheduled=True and scheduled_at with the ISO8601 formatted date/time
-   - EXAMPLE: User says "Book a ride to F7 Markaz for tomorrow at 2 PM" → Ask for confirmation with details including scheduling info → When confirmed, call book_ride_with_details(dropoff_place="F7 Markaz", ride_type="LUMI_GO", is_scheduled=True, scheduled_at="2025-12-30T14:00:00.000Z")
+   - DATE/TIME CONVERSION: When user provides a time in natural language (e.g., "tomorrow at 7 PM", "December 30 at 10:30 AM"), convert it to ISO8601 format (e.g., "2026-01-06T19:00:00.000Z"). IMPORTANT: This ISO8601 format is just a structured representation of the date/time - treat it as LOCAL TIME, not UTC. The system will automatically convert it to UTC based on the user's location timezone (current location, pickup, or dropoff).
+   - SCHEDULING WORKFLOW: The workflow is the same as regular booking, but when calling book_ride_with_details, include is_scheduled=True and scheduled_at with the ISO8601 formatted date/time (the system treats it as local time and converts to UTC automatically)
+   - EXAMPLE: User says "Book a ride to F7 Markaz for tomorrow at 2 PM" → Convert "tomorrow at 2 PM" to ISO8601 (e.g., "2026-01-06T14:00:00.000Z") → Ask for confirmation showing the date/time → When confirmed, call book_ride_with_details(dropoff_place="F7 Markaz", ride_type="LUMI_GO", is_scheduled=True, scheduled_at="2026-01-06T14:00:00.000Z")
    - IF SCHEDULING NOT MENTIONED: Default to immediate booking (is_scheduled=False, scheduled_at=None)
 
 5. CONFIRMATION (ALWAYS USE QUESTION FORMAT):
    - ALWAYS ask as a QUESTION, never make statements like "I'll proceed" or "Let me book"
    - Use question format: "Should I proceed with booking your ride?" or "Would you like me to book this ride for you?" or "Do you want me to proceed with booking?"
-   - Include booking details in the confirmation question: "I'll book your ride from [pickup] to [dropoff] using [ride_type]. Should I proceed with booking your ride?" (If scheduled: "I'll schedule your ride from [pickup] to [dropoff] using [ride_type] for [date/time]. Should I proceed?")
+   - Include booking details in the confirmation question: "I'll book your ride from [pickup] to [dropoff] using [ride_type]. Should I proceed with booking your ride?" (If scheduled: "I'll schedule your ride from [pickup] to [dropoff] using [ride_type] for [date and time in readable format, e.g., 'January 6, 2026 at 7:00 PM']. Should I proceed?")
    - ABSOLUTELY CRITICAL - NEVER SAY "YES": When user just mentions a ride type (e.g., "Lumi Plus", "Lumi Go", "I'll go by Lumi Plus"), you MUST NEVER respond with "Yes" - instead check conversation history for locations (pickup, dropoff, stops), show booking details with those locations, then ask confirmation as a question like "Should I proceed with booking your ride?"
    - ABSOLUTELY CRITICAL - AFTER USER CONFIRMS: When user confirms with "Yes", "Okay", "Proceed", "Book it", etc. after you've asked for confirmation, you MUST IMMEDIATELY call book_ride_with_details with the details from the conversation history. DO NOT call list_ride_types again - the ride type was already validated in the previous turn. Extract pickup, dropoff, ride_type, stops, is_scheduled, and scheduled_at from conversation history and call book_ride_with_details directly.
    - NEVER say "Yes, I'll proceed" or "Let me book it for you" - always ask as a question
@@ -949,7 +949,7 @@ tools = [
           "stops":{"type":"array","items":{"type":"string"},"description":"Optional list of stop place names (e.g., ['F-6 Markaz, Islamabad', 'E-11, Islamabad']). Stops will be resolved to coordinates automatically."},
           "payment_via":{"type":"string","enum":["WALLET","CASH","CARD"],"description":"Payment method (optional, defaults to CASH)"},
           "is_scheduled":{"type":"boolean","description":"Whether this is a scheduled ride (optional). Set to true if user wants to schedule the ride for later. Must be true if scheduled_at is provided."},
-          "scheduled_at":{"type":"string","description":"ISO8601 timestamp in UTC format (e.g., '2025-09-23T07:25:32.084Z') for when the ride should be scheduled. Required if is_scheduled is true. Format: YYYY-MM-DDTHH:MM:SS.mmmZ. Convert user-provided date/time to UTC ISO8601 format before passing."},
+          "scheduled_at":{"type":"string","description":"ISO8601 formatted date/time string (e.g., '2026-01-06T19:00:00.000Z'). Convert the user's natural language time (e.g., 'tomorrow at 7 PM') to ISO8601 format. IMPORTANT: This ISO8601 string represents LOCAL TIME (not UTC) - the system will automatically convert it to UTC based on the user's location timezone. Format: YYYY-MM-DDTHH:MM:SS.mmmZ"},
           "is_family":{"type":"boolean","description":"Whether this is a family ride (optional)"}
         },
         "required":["dropoff_place","ride_type"]
@@ -1178,6 +1178,150 @@ def _normalize_ride_type_name(name: str) -> str:
     if not name:
         return ""
     return name.strip().lower().replace(" ", "").replace("_", "")
+
+async def convert_local_time_to_utc_iso8601(user_time_str: str, location_coords: dict | None = None) -> str:
+    """
+    Convert a user-provided time string to UTC ISO8601 format, considering the local timezone.
+    
+    This function handles both raw user input (e.g., "Tomorrow 7 PM") and pre-converted ISO8601 UTC strings.
+    If an ISO8601 UTC string is provided, it assumes it was incorrectly converted and re-converts it
+    based on the location's timezone.
+    
+    Args:
+        user_time_str: Time string from user (e.g., "Tomorrow 7 PM", "2025-01-01 19:00", or ISO8601 format)
+        location_coords: Optional {"lat": float, "lng": float} to determine timezone. 
+                        If not provided, uses STATE["current_location"], then STATE["pickup"], then STATE["dropoff"]
+    
+    Returns:
+        ISO8601 UTC timestamp string (e.g., "2025-01-01T14:00:00.000Z")
+    """
+    try:
+        from dateutil import parser
+        import pytz
+        from datetime import datetime, timezone as tz
+        import re
+        from google_maps import get_google_maps_service
+        
+        # Determine location coordinates for timezone lookup (priority order)
+        coords_to_use = None
+        if location_coords and location_coords.get("lat") and location_coords.get("lng"):
+            coords_to_use = location_coords
+        elif STATE.get("current_location") and STATE["current_location"].get("lat") and STATE["current_location"].get("lng"):
+            coords_to_use = STATE["current_location"]
+        elif STATE.get("pickup") and STATE["pickup"].get("lat") and STATE["pickup"].get("lng"):
+            coords_to_use = STATE["pickup"]
+        elif STATE.get("dropoff") and STATE["dropoff"].get("lat") and STATE["dropoff"].get("lng"):
+            coords_to_use = STATE["dropoff"]
+        
+        # Get timezone from location
+        timezone_name = None
+        if coords_to_use:
+            try:
+                service = get_google_maps_service()
+                tz_result = await service.getTimezoneFromCoordinates(
+                    coords_to_use["lat"],
+                    coords_to_use["lng"]
+                )
+                timezone_name = tz_result.get("timeZoneId")
+                print(f"[DEBUG] Detected timezone '{timezone_name}' for coordinates {coords_to_use}")
+            except Exception as e:
+                print(f"⚠️ Error getting timezone: {e}")
+        
+        # Check if input is in ISO8601 format (expected format from LLM)
+        iso8601_pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$'
+        is_iso8601 = bool(re.match(iso8601_pattern, user_time_str.strip()))
+        
+        if is_iso8601 and timezone_name:
+            # Input is in ISO8601 format from LLM - treat it as LOCAL TIME (not UTC)
+            # The LLM converts natural language to ISO8601 as structured data, not actual UTC
+            # We need to:
+            # 1. Parse the ISO8601 string to extract date/time components
+            # 2. Treat those components as local time in the detected timezone
+            # 3. Convert that local datetime to UTC
+            try:
+                tz_obj = pytz.timezone(timezone_name)
+                # Parse ISO8601 string (it may have Z suffix but we ignore timezone info)
+                parsed = parser.parse(user_time_str)
+                
+                # Extract date/time components (year, month, day, hour, minute, second)
+                # These components represent LOCAL TIME, not UTC
+                year = parsed.year
+                month = parsed.month
+                day = parsed.day
+                hour = parsed.hour
+                minute = parsed.minute
+                second = parsed.second
+                microsecond = parsed.microsecond if hasattr(parsed, 'microsecond') else 0
+                
+                # Create a naive datetime with these components
+                naive_dt = datetime(year, month, day, hour, minute, second, microsecond)
+                
+                # Localize it to the detected timezone (treating it as local time)
+                local_dt = tz_obj.localize(naive_dt)
+                
+                # Convert to UTC
+                utc_dt = local_dt.astimezone(tz.utc)
+                print(f"[DEBUG] Converted ISO8601 '{user_time_str}' (treated as {year}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}:{second:02d} local {timezone_name}) to UTC: '{utc_dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]}Z'")
+                return utc_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            except Exception as e:
+                print(f"⚠️ Error converting ISO8601 time: {e}, falling back to standard parsing")
+                # Fall through to standard parsing
+        
+        # Fallback parsing: treat input as raw user time string (for backward compatibility)
+        if timezone_name:
+            try:
+                tz_obj = pytz.timezone(timezone_name)
+                # Parse time string in the context of the local timezone
+                # dateutil.parser.parse handles relative dates like "tomorrow"
+                parsed_dt = parser.parse(user_time_str, default=datetime.now(tz_obj))
+                # If parsed datetime is naive, localize it
+                if parsed_dt.tzinfo is None:
+                    parsed_dt = tz_obj.localize(parsed_dt)
+                # Convert to UTC
+                utc_dt = parsed_dt.astimezone(tz.utc)
+                print(f"[DEBUG] Converted '{user_time_str}' from {timezone_name} to UTC: '{utc_dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]}Z'")
+            except Exception as e:
+                print(f"⚠️ Error parsing time with timezone {timezone_name}: {e}")
+                # Fallback: parse without timezone, assume it's in the detected timezone
+                try:
+                    parsed_dt = parser.parse(user_time_str)
+                    if parsed_dt.tzinfo is None:
+                        tz_obj = pytz.timezone(timezone_name)
+                        parsed_dt = tz_obj.localize(parsed_dt)
+                    utc_dt = parsed_dt.astimezone(tz.utc)
+                    print(f"[DEBUG] Converted '{user_time_str}' (fallback) from {timezone_name} to UTC: '{utc_dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]}Z'")
+                except Exception as e2:
+                    print(f"⚠️ Error in fallback parsing: {e2}")
+                    # Final fallback: parse and assume UTC (shouldn't happen often)
+                    parsed_dt = parser.parse(user_time_str)
+                    if parsed_dt.tzinfo is None:
+                        parsed_dt = parsed_dt.replace(tzinfo=tz.utc)
+                    utc_dt = parsed_dt if parsed_dt.tzinfo else parsed_dt.replace(tzinfo=tz.utc)
+        else:
+            # No timezone available, parse and assume UTC
+            parsed_dt = parser.parse(user_time_str)
+            if parsed_dt.tzinfo is None:
+                parsed_dt = parsed_dt.replace(tzinfo=tz.utc)
+            utc_dt = parsed_dt if parsed_dt.tzinfo else parsed_dt.replace(tzinfo=tz.utc)
+            print(f"[DEBUG] Converted '{user_time_str}' (no timezone) to UTC: '{utc_dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]}Z'")
+        
+        # Format to ISO8601 with milliseconds and Z suffix
+        return utc_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    
+    except Exception as e:
+        print(f"⚠️ Error converting time to UTC: {e}")
+        import traceback
+        traceback.print_exc()
+        # If all else fails, try to parse as-is (might already be ISO8601)
+        try:
+            from dateutil import parser
+            parsed = parser.parse(user_time_str)
+            if parsed.tzinfo is None:
+                from datetime import timezone
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        except:
+            raise ValueError(f"Failed to parse time string: {user_time_str}")
 
 def _extract_user_friendly_error(api_response: dict, status_code: int = None) -> str:
     """
@@ -2293,6 +2437,21 @@ async def tool_create_ride_and_wait_for_bids(payment_via=None, is_scheduled=Fals
     # Use provided offered_fair if given, otherwise use recommended fare from quote
     final_offered_fair = offered_fair if offered_fair is not None and offered_fair > 0 else recommended_fare
 
+    # Convert scheduled_at to UTC ISO8601 format if provided, using location timezone
+    final_scheduled_at = None
+    if is_scheduled and scheduled_at:
+        try:
+            # Convert to UTC based on location timezone (current_location -> pickup -> dropoff priority)
+            final_scheduled_at = await convert_local_time_to_utc_iso8601(scheduled_at)
+            print(f"[DEBUG] Converted scheduled_at from '{scheduled_at}' to UTC: '{final_scheduled_at}'")
+        except Exception as e:
+            print(f"⚠️ Error converting scheduled_at to UTC: {e}")
+            # Fallback: use as-is (might already be in correct format)
+            final_scheduled_at = scheduled_at
+    elif is_scheduled:
+        # No scheduled_at provided but is_scheduled is True, use default (15 minutes from now)
+        final_scheduled_at = _iso_in(15)
+
     out = create_ride_request_exact(
         pickup=STATE["pickup"],
         dropoff=STATE["dropoff"],
@@ -2314,7 +2473,7 @@ async def tool_create_ride_and_wait_for_bids(payment_via=None, is_scheduled=Fals
         payment_via=payment_via or "CASH",
         is_hourly=False,
         is_scheduled=bool(is_scheduled),
-        scheduled_at=scheduled_at if scheduled_at else (None if not is_scheduled else _iso_in(15)),
+        scheduled_at=final_scheduled_at,
         offered_fair=final_offered_fair,  # Use recommended fare from quote
         is_family=bool(is_family),
         estimated_time=estimated_time,
@@ -2439,6 +2598,21 @@ async def tool_create_request_and_poll(payment_via=None, is_scheduled=False, sch
             "quote": fare,
         }
 
+    # Convert scheduled_at to UTC ISO8601 format if provided, using location timezone
+    final_scheduled_at = None
+    if is_scheduled and scheduled_at:
+        try:
+            # Convert to UTC based on location timezone (current_location -> pickup -> dropoff priority)
+            final_scheduled_at = await convert_local_time_to_utc_iso8601(scheduled_at)
+            print(f"[DEBUG] Converted scheduled_at from '{scheduled_at}' to UTC: '{final_scheduled_at}'")
+        except Exception as e:
+            print(f"⚠️ Error converting scheduled_at to UTC: {e}")
+            # Fallback: use as-is (might already be in correct format)
+            final_scheduled_at = scheduled_at
+    elif is_scheduled:
+        # No scheduled_at provided but is_scheduled is True, use default (15 minutes from now)
+        final_scheduled_at = _iso_in(15)
+
     out = create_ride_request_exact(
         pickup=STATE["pickup"],
         dropoff=STATE["dropoff"],
@@ -2460,7 +2634,7 @@ async def tool_create_request_and_poll(payment_via=None, is_scheduled=False, sch
         payment_via=payment_via or "CASH",
         is_hourly=False,
         is_scheduled=bool(is_scheduled),
-        scheduled_at=scheduled_at or _iso_in(15),
+        scheduled_at=final_scheduled_at,
         offered_fair=offered_fair if offered_fair is not None else 0,
         is_family=bool(is_family),
         estimated_time=estimated_time,
