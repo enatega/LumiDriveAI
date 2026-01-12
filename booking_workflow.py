@@ -96,6 +96,8 @@ def _parse_coordinates(place_str: str) -> dict | None:
 
 async def resolve_locations(state: BookingState) -> BookingState:
     """Resolve place names to coordinates using Google Maps API"""
+    from assistant import send_status
+    
     pickup_place = state.get("pickup_place")
     dropoff_place = state.get("dropoff_place")
     stops = state.get("stops") or []
@@ -104,6 +106,9 @@ async def resolve_locations(state: BookingState) -> BookingState:
     dropoff_coords = None
     stops_coords = []
     error = None
+    
+    # Status message already sent by book_ride_with_details, so we don't send it again here
+    # This prevents duplicate status messages
     
     if pickup_place:
         # CRITICAL: Check if we have original coordinates stored in STATE (from coordinate-to-address conversion)
@@ -212,6 +217,8 @@ async def resolve_locations(state: BookingState) -> BookingState:
 
 async def set_trip_and_ride_type(state: BookingState) -> BookingState:
     """Set trip core and ride type, then auto-book"""
+    from assistant import send_status
+    
     pickup_coords = state.get("pickup_coords")
     dropoff_coords = state.get("dropoff_coords")
     stops_coords = state.get("stops_coords") or []
@@ -224,6 +231,7 @@ async def set_trip_and_ride_type(state: BookingState) -> BookingState:
         }
     
     # Set trip core
+    send_status("Calculating fare...")
     try:
         trip_result = await tool_set_trip_core(
             pickup=pickup_coords,
@@ -261,6 +269,7 @@ async def set_trip_and_ride_type(state: BookingState) -> BookingState:
     
     # If ride type is provided, set it (which will auto-book)
     if ride_type:
+        send_status("Creating your ride request...")
         try:
             ride_result = await tool_set_ride_type(ride_type)
             

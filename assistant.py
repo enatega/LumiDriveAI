@@ -1106,6 +1106,30 @@ STATE = {
   "computed_duration_min": None,
 }
 
+# Status callback mechanism for sending status updates during long operations
+_status_callback = None
+
+def set_status_callback(callback):
+    """Set a callback function to send status updates. Callback receives a string message."""
+    global _status_callback
+    _status_callback = callback
+
+def send_status(message: str):
+    """Send a status message via the callback if set."""
+    global _status_callback
+    print(f"[DEBUG] send_status called with: '{message}', callback set: {_status_callback is not None}")
+    if _status_callback:
+        try:
+            _status_callback(message)
+            print(f"[DEBUG] Status callback executed successfully for: '{message}'")
+        except Exception as e:
+            # Don't let status callback errors break the main flow
+            print(f"⚠️ Error in status callback: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"[DEBUG] No status callback set, message not sent: '{message}'")
+
 def _extract_customer_id_from_bid(bid: dict | None):
     if not isinstance(bid, dict):
         return None
@@ -2494,6 +2518,15 @@ async def tool_create_ride_and_wait_for_bids(payment_via=None, is_scheduled=Fals
     STATE["rideRequestId"] = rrid
     STATE["customerId"] = None
 
+    # Send status message for bid search RIGHT AFTER ride is created
+    # This ensures it's queued and can be yielded before the blocking wait_for_bids call
+    send_status("Searching for available drivers...")
+    
+    # Give the async generator a moment to yield the status message before blocking
+    # This allows the status message to be sent to the frontend before wait_for_bids blocks
+    import asyncio
+    await asyncio.sleep(0.5)  # Give enough time for the message to be yielded
+    
     # Wait for first bid to arrive - present it IMMEDIATELY when it arrives
     bids = wait_for_bids(rrid, timeout_seconds=60, poll_interval=2)
     
@@ -2828,9 +2861,15 @@ def tool_accept_bid_choice(choice_index: int = None, driver_name: str = None):
 
     customer_id = _remember_customer_id_from_bid(selected)
 
+    # Send status message for bid acceptance
+    send_status("Accepting the best offer...")
+    
     # Reuse low-level accept tool
     base = tool_accept_bid(bidId=bid_id, customer_id=customer_id)
     ok = base.get("status") in (200, 201, 202)
+    
+    if ok:
+        send_status("Ride booked successfully!")
 
     if ok:
         amount_str = _format_price(price if isinstance(price, (int, float)) else 0.0)
@@ -2990,6 +3029,9 @@ async def tool_book_ride_with_details(
     print(f"  scheduled_at: {scheduled_at}")
     if original_pickup_coords:
         print(f"  original_pickup_coords: {original_pickup_coords}")
+    
+    # Send initial status message
+    send_status("Resolving pickup and dropoff locations...")
     
     try:
         from booking_workflow import process_booking_with_details

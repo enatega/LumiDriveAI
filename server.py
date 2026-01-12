@@ -1,6 +1,8 @@
 from typing import List, Literal, Optional, Dict, Any
 import logging
 import time
+import asyncio
+from collections import deque
 
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse, Response
@@ -141,13 +143,16 @@ async def _run_tools_for_message(msg, messages: List[Dict[str, Any]], user_locat
                 from assistant import tool_check_active_ride
                 result = await tool_check_active_ride()
             elif tc.function.name == "book_ride_with_details":
-                from assistant import tool_book_ride_with_details
+                from assistant import tool_book_ride_with_details, _status_callback
                 logger.info(f"DEBUG book_ride_with_details args:")
                 logger.info(f"  pickup_place: '{args.get('pickup_place', 'NOT PROVIDED')}'")
                 logger.info(f"  dropoff_place: '{args.get('dropoff_place', 'NOT PROVIDED')}'")
                 logger.info(f"  ride_type: '{args.get('ride_type', 'NOT PROVIDED')}'")
                 logger.info(f"  stops: {args.get('stops', [])}")
+                logger.info(f"  Status callback set when calling book_ride_with_details: {_status_callback is not None}")
+                print(f"[DEBUG] Status callback set when calling book_ride_with_details: {_status_callback is not None}")
                 result = await tool_book_ride_with_details(**args)
+                logger.info(f"  book_ride_with_details completed, result ok: {result.get('ok', False)}")
             elif tc.function.name == "auto_book_ride":
                 from assistant import tool_auto_book_ride
                 result = await tool_auto_book_ride(**args)
@@ -312,6 +317,26 @@ async def chat_endpoint(
         messages = memory_to_openai_messages(memory, system_prompt)
         logger.info(f"[{request_id}] Total messages for OpenAI: {len(messages)}")
 
+        # Set up status callback BEFORE tool execution so we can capture status messages
+        import json
+        from assistant import set_status_callback, send_status
+        status_queue = []  # Simple list for status messages
+        
+        def status_handler(message: str):
+            """Handle status messages by adding them to the queue"""
+            status_json = json.dumps({"type": "status", "message": message}) + "\n"
+            status_queue.append(status_json)
+            logger.info(f"[{request_id}] Status message queued: {message} (queue length: {len(status_queue)})")
+            print(f"[DEBUG] Status message queued: {message} (queue length: {len(status_queue)})")
+        
+        # Set the status callback before any tools are executed
+        set_status_callback(status_handler)
+        
+        # Verify callback was set
+        from assistant import _status_callback as check_callback
+        logger.info(f"[{request_id}] Status callback verified after setting: {check_callback is not None}")
+        print(f"[DEBUG] Status callback verified after setting: {check_callback is not None}, callback id: {id(check_callback)}")
+
         try:
             logger.info(f"[{request_id}] Calling OpenAI API (first call with tools)...")
             first = client.chat.completions.create(
@@ -323,6 +348,7 @@ async def chat_endpoint(
             logger.info(f"[{request_id}] OpenAI first call completed")
         except Exception as exc:
             logger.error(f"[{request_id}] ERROR: Failed to reach OpenAI: {exc}")
+            set_status_callback(None)  # Clear callback on error
             raise HTTPException(status_code=502, detail=f"Failed to reach OpenAI: {exc}") from exc
 
         first_msg = first.choices[0].message
@@ -331,31 +357,132 @@ async def chat_endpoint(
             logger.info(f"[{request_id}] Executing {len(first_msg.tool_calls)} tool calls...")
             for tc in first_msg.tool_calls:
                 logger.info(f"[{request_id}] Tool Call: {tc.function.name}")
-        await _run_tools_for_message(first_msg, messages)
-
-        try:
-            logger.info(f"[{request_id}] Calling OpenAI API (streaming response)...")
-            # If there were tool calls, _run_tools_for_message already added the assistant message
-            # with tool_calls and tool responses to messages. Only add assistant message if there
-            # were no tool calls.
-            if had_tool_calls:
-                stream_messages = messages
-            else:
-                # No tool calls, so add the assistant message with its content
-                stream_messages = messages + [{"role": "assistant", "content": first_msg.content or ""}]
-            stream = client.chat.completions.create(
-                model=MODEL,
-                messages=stream_messages,
-                stream=True,
-            )
-            logger.info(f"[{request_id}] OpenAI streaming started")
-        except Exception as exc:
-            logger.error(f"[{request_id}] ERROR: Failed to stream OpenAI response: {exc}")
-            raise HTTPException(status_code=502, detail=f"Failed to stream OpenAI response: {exc}") from exc
-
-        def token_stream():
+            
+            # Verify callback is set before tool execution
+            from assistant import _status_callback
+            logger.info(f"[{request_id}] Status callback set before tool execution: {_status_callback is not None}")
+            print(f"[DEBUG] Status callback set before tool execution: {_status_callback is not None}")
+            print(f"[DEBUG] Status queue length before tool execution: {len(status_queue)}")
+        
+        # Start streaming immediately to yield status messages during tool execution
+        # We'll yield status messages as they're generated, then yield content
+        
+        async def async_token_stream():
+            """Async generator that yields status messages immediately during tool execution"""
+            seen_messages = set()
+            tool_execution_done = False
+            tool_execution_error = None
+            
+            async def run_tools_async():
+                """Run tools in background"""
+                nonlocal tool_execution_done, tool_execution_error
+                try:
+                    await _run_tools_for_message(first_msg, messages)
+                    tool_execution_done = True
+                except Exception as e:
+                    tool_execution_error = e
+                    tool_execution_done = True
+            
+            # Start tool execution in background
+            tool_task = asyncio.create_task(run_tools_async())
+            
+            # Yield status messages immediately as they're generated during tool execution
+            # Run tool execution and status message yielding concurrently
+            # Keep checking until tool is done AND we've waited long enough for any late messages
+            last_message_time = time.time()
+            max_idle_time = 3.0  # Wait up to 3 seconds after last message before giving up
+            
+            while not tool_execution_done or status_queue or (time.time() - last_message_time < max_idle_time):
+                # Yield any new status messages one at a time with small delay
+                if status_queue:
+                    status_msg = status_queue.pop(0)
+                    try:
+                        msg_data = json.loads(status_msg.strip())
+                        msg_text = msg_data.get('message', '')
+                        if msg_text and msg_text not in seen_messages:
+                            seen_messages.add(msg_text)
+                            logger.info(f"[{request_id}] Yielding status message immediately: {msg_text}")
+                            print(f"[DEBUG] Yielding status message immediately: {msg_text}")
+                            yield status_msg
+                            last_message_time = time.time()  # Reset timer when we get a message
+                            # Delay to allow frontend to display the message before next one
+                            await asyncio.sleep(0.3)
+                        else:
+                            print(f"[DEBUG] Status message already sent, skipping: {msg_text}")
+                    except json.JSONDecodeError:
+                        yield status_msg
+                        last_message_time = time.time()
+                        await asyncio.sleep(0.3)
+                else:
+                    # If queue is empty but tool is still running, check more frequently
+                    if not tool_execution_done:
+                        await asyncio.sleep(0.05)
+                    else:
+                        # Tool is done, but continue checking for messages queued during synchronous operations
+                        # Check if we've waited long enough without new messages
+                        if time.time() - last_message_time >= max_idle_time:
+                            logger.info(f"[{request_id}] No new status messages for {max_idle_time}s, exiting status loop")
+                            break
+                        await asyncio.sleep(0.1)
+            
+            # Wait for tool execution to complete (in case it hasn't already)
+            if not tool_execution_done:
+                await tool_task
+            if tool_execution_error:
+                raise tool_execution_error
+            
+            # Final check: yield any remaining status messages that might have been queued
+            # right as tool execution was completing (race condition handling)
+            while status_queue:
+                status_msg = status_queue.pop(0)
+                try:
+                    msg_data = json.loads(status_msg.strip())
+                    msg_text = msg_data.get('message', '')
+                    if msg_text and msg_text not in seen_messages:
+                        seen_messages.add(msg_text)
+                        logger.info(f"[{request_id}] Yielding final status message: {msg_text}")
+                        print(f"[DEBUG] Yielding final status message: {msg_text}")
+                        yield status_msg
+                        # Delay to allow frontend to display the message
+                        await asyncio.sleep(0.3)
+                except json.JSONDecodeError:
+                    yield status_msg
+                    await asyncio.sleep(0.3)
+            
+            # Check callback and queue after waiting for status messages
+            from assistant import _status_callback
+            logger.info(f"[{request_id}] Status callback set after tool execution: {_status_callback is not None}")
+            logger.info(f"[{request_id}] Status queue length after waiting: {len(status_queue)}")
+            print(f"[DEBUG] Status callback set after tool execution: {_status_callback is not None}")
+            print(f"[DEBUG] Status queue length after waiting: {len(status_queue)}")
+            if status_queue:
+                print(f"[DEBUG] Remaining status queue contents: {[json.loads(msg.strip()).get('message', '') for msg in status_queue]}")
+            
+            try:
+                logger.info(f"[{request_id}] Calling OpenAI API (streaming response)...")
+                # If there were tool calls, _run_tools_for_message already added the assistant message
+                # with tool_calls and tool responses to messages. Only add assistant message if there
+                # were no tool calls.
+                if had_tool_calls:
+                    stream_messages = messages
+                else:
+                    # No tool calls, so add the assistant message with its content
+                    stream_messages = messages + [{"role": "assistant", "content": first_msg.content or ""}]
+                stream = client.chat.completions.create(
+                    model=MODEL,
+                    messages=stream_messages,
+                    stream=True,
+                )
+                logger.info(f"[{request_id}] OpenAI streaming started")
+            except Exception as exc:
+                logger.error(f"[{request_id}] ERROR: Failed to stream OpenAI response: {exc}")
+                set_status_callback(None)  # Clear callback on error
+                raise HTTPException(status_code=502, detail=f"Failed to stream OpenAI response: {exc}") from exc
+            
+            # Then stream the normal content
             final_chunks: List[str] = []
             chunk_count = 0
+            
             try:
                 for chunk in stream:
                     delta = chunk.choices[0].delta
@@ -364,8 +491,30 @@ async def chat_endpoint(
                         cleaned_content = strip_asterisks(delta.content)
                         final_chunks.append(cleaned_content)
                         chunk_count += 1
-                        yield cleaned_content
+                        # Only yield content if it's not empty
+                        if cleaned_content:
+                            # Yield as content type JSON
+                            yield json.dumps({"type": "content", "text": cleaned_content}) + "\n"
+                    
+                    # Check for new status messages while streaming (interleave them)
+                    while status_queue:
+                        status_msg = status_queue.pop(0)
+                        try:
+                            msg_data = json.loads(status_msg.strip())
+                            msg_text = msg_data.get('message', '')
+                            if msg_text and msg_text not in seen_messages:
+                                seen_messages.add(msg_text)
+                                logger.info(f"[{request_id}] Yielding status message during stream: {msg_text}")
+                                print(f"[DEBUG] Yielding status message during stream: {msg_text}")
+                                yield status_msg
+                            else:
+                                print(f"[DEBUG] Status message already sent during stream, skipping: {msg_text}")
+                        except json.JSONDecodeError:
+                            yield status_msg
             finally:
+                # Clear status callback
+                set_status_callback(None)
+                
                 final_text = "".join(final_chunks).strip()
                 # Strip asterisks from final text before saving to memory
                 final_text = strip_asterisks(final_text)
@@ -381,8 +530,8 @@ async def chat_endpoint(
                     logger.info(f"[{request_id}] ==========================================")
                 else:
                     logger.warning(f"[{request_id}] WARNING: Empty response streamed")
-
-        return StreamingResponse(token_stream(), media_type="text/plain")
+        
+        return StreamingResponse(async_token_stream(), media_type="text/plain")
     
     except HTTPException as e:
         elapsed_time = time.time() - start_time

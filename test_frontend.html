@@ -480,6 +480,25 @@
             white-space: pre-wrap;
             word-wrap: break-word;
         }
+        .chat-message.status-temp {
+            opacity: 0.8;
+            animation: fadeInOut 0.3s ease-in;
+        }
+        .chat-message.status-temp .status-spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid rgba(102, 126, 234, 0.3);
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        @keyframes fadeInOut {
+            from { opacity: 0; transform: translateY(-5px); }
+            to { opacity: 0.8; transform: translateY(0); }
+        }
         .mode-toggle {
             display: flex;
             gap: 10px;
@@ -651,6 +670,48 @@
             background: #ccc;
             cursor: not-allowed;
         }
+        /* Status Badge Styles */
+        .status-badge {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.85);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 24px;
+            display: none;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            z-index: 1000;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            animation: fadeInUp 0.3s ease-out;
+        }
+        .status-badge.show {
+            display: flex;
+        }
+        .status-badge .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
     </style>
 </head>
 <body>
@@ -687,6 +748,12 @@
         </div>
 
         <div id="status" class="status"></div>
+        
+        <!-- Status Badge -->
+        <div id="statusBadge" class="status-badge" role="status" aria-live="polite">
+            <span class="spinner"></span>
+            <span id="statusBadgeText"></span>
+        </div>
 
         <!-- Chat Section -->
         <div class="chat-section active">
@@ -1435,15 +1502,51 @@
                 const reader = chatResponse.body.getReader();
                 const decoder = new TextDecoder();
                 let assistantText = '';
+                let buffer = '';
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
 
-                    const chunk = decoder.decode(value, { stream: true });
-                    assistantText += chunk;
-                    responseP.textContent = assistantText;
-                    updateStreamingMessage(assistantText);
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        
+                        try {
+                            const data = JSON.parse(line);
+                            console.log('[Stream] Parsed JSON:', JSON.stringify(data, null, 2));
+                            
+                            if (data.type === 'status' && data.message) {
+                                // Show status message as temporary chat message (disappearing)
+                                console.log('[Stream] Showing status in chat:', data.message);
+                                showStatusInChat(data.message);
+                                // Don't show badge - only show in chat
+                            } else if (data.type === 'content' && data.text) {
+                                // Remove status messages when content starts arriving
+                                removeStatusFromChat();
+                                
+                                // Append to chat content
+                                assistantText += data.text;
+                                responseP.textContent = assistantText;
+                                updateStreamingMessage(assistantText);
+                            } else {
+                                console.log('[Stream] Unknown or empty JSON object:', data);
+                            }
+                        } catch (e) {
+                            // Fallback: treat as plain text (backward compatibility)
+                            console.log('[Stream] Non-JSON line (fallback):', line);
+                            assistantText += line;
+                            responseP.textContent = assistantText;
+                            updateStreamingMessage(assistantText);
+                            // Hide status when we get plain text content
+                            if (assistantText.trim().length > 0) {
+                                hideStatusMessage();
+                            }
+                        }
+                    }
                 }
 
                 if (!assistantText.trim()) {
@@ -1451,6 +1554,7 @@
                 }
 
                 finalizeStreamingMessage();
+                removeStatusFromChat();
                 
                 // Check if assistant is requesting map selection
                 if (checkForToolCalls(assistantText)) {
@@ -1541,12 +1645,44 @@
             chatHistory.scrollTop = chatHistory.scrollHeight;
         }
 
+        // Show status message as temporary chat message (disappearing)
+        function showStatusInChat(message) {
+            // Remove any existing status message
+            const existingStatus = chatHistory.querySelector('.chat-message.assistant.status-temp');
+            if (existingStatus) {
+                existingStatus.remove();
+            }
+            
+            // Create new status message
+            const statusMsg = document.createElement('div');
+            statusMsg.className = 'chat-message assistant status-temp';
+            statusMsg.innerHTML = `
+                <div class="role">Assistant</div>
+                <div class="content">
+                    <span class="status-spinner"></span>
+                    ${message}
+                </div>
+            `;
+            chatHistory.appendChild(statusMsg);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+
+        // Remove status message from chat
+        function removeStatusFromChat() {
+            const statusMsg = chatHistory.querySelector('.chat-message.assistant.status-temp');
+            if (statusMsg) {
+                statusMsg.remove();
+            }
+        }
+
         // Finalize streaming message
         function finalizeStreamingMessage() {
             const streamingMsg = chatHistory.querySelector('.chat-message.assistant.streaming');
             if (streamingMsg) {
                 streamingMsg.classList.remove('streaming');
             }
+            // Remove any status messages when finalizing
+            removeStatusFromChat();
         }
 
         // Send text message
@@ -1591,14 +1727,58 @@
                 const reader = chatResponse.body.getReader();
                 const decoder = new TextDecoder();
                 let assistantText = '';
+                let buffer = '';
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
 
-                    const chunk = decoder.decode(value, { stream: true });
-                    assistantText += chunk;
-                    updateStreamingMessage(assistantText);
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        
+                        try {
+                            const data = JSON.parse(line);
+                            console.log('[Stream] Raw line:', line);
+                            console.log('[Stream] Parsed JSON:', JSON.stringify(data, null, 2));
+                            
+                            if (data.type === 'status') {
+                                // Show status message as temporary chat message (disappearing)
+                                if (data.message) {
+                                    console.log('[Stream] Showing status in chat:', data.message);
+                                    showStatusInChat(data.message);
+                                    // Don't show badge - only show in chat
+                                } else {
+                                    console.warn('[Stream] Status message missing message field:', data);
+                                }
+                            } else if (data.type === 'content') {
+                                // Remove status messages when content starts arriving
+                                removeStatusFromChat();
+                                
+                                // Append to chat content (even if empty, to accumulate)
+                                if (data.text !== undefined && data.text !== null) {
+                                    assistantText += data.text;
+                                    updateStreamingMessage(assistantText);
+                                } else {
+                                    console.warn('[Stream] Content message missing text field:', data);
+                                }
+                            } else {
+                                console.warn('[Stream] Unknown JSON structure - missing type or unknown type:', data);
+                            }
+                        } catch (e) {
+                            // Fallback: treat as plain text (backward compatibility)
+                            console.log('[Stream] Non-JSON line (fallback):', line.substring(0, 100));
+                            assistantText += line;
+                            updateStreamingMessage(assistantText);
+                            // Hide status when we get plain text content
+                            if (assistantText.trim().length > 0) {
+                                hideStatusMessage();
+                            }
+                        }
+                    }
                 }
 
                 if (!assistantText.trim()) {
@@ -1606,6 +1786,7 @@
                 }
 
                 finalizeStreamingMessage();
+                removeStatusFromChat();
                 
                 // Check if assistant is requesting map selection
                 if (checkForToolCalls(assistantText)) {
@@ -1644,6 +1825,31 @@
             stopRecording();
         });
 
+        // Status badge functions
+        function showStatusMessage(message) {
+            console.log('[Status] Showing status message:', message);
+            const badge = document.getElementById('statusBadge');
+            const badgeText = document.getElementById('statusBadgeText');
+            if (badge && badgeText) {
+                badgeText.textContent = message;
+                badge.style.display = 'flex'; // Force display
+                badge.classList.add('show');
+                console.log('[Status] Badge shown:', badge.classList.contains('show'), 'Display:', badge.style.display);
+                console.log('[Status] Badge element:', badge);
+                console.log('[Status] Badge text element:', badgeText);
+            } else {
+                console.error('[Status] Badge elements not found!', { badge, badgeText });
+            }
+        }
+
+        function hideStatusMessage() {
+            console.log('[Status] Hiding status message');
+            const badge = document.getElementById('statusBadge');
+            if (badge) {
+                badge.classList.remove('show');
+            }
+        }
+
         clearBtn.addEventListener('click', () => {
             transcriptP.textContent = '-';
             responseP.textContent = '-';
@@ -1656,6 +1862,7 @@
             `;
             generateSessionId();
             hideStatus();
+            hideStatusMessage();
         });
 
         // Update API URL when changed
