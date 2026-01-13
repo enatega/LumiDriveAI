@@ -1530,8 +1530,8 @@
                                 
                                 // Append to chat content
                                 assistantText += data.text;
-                                responseP.textContent = assistantText;
-                                updateStreamingMessage(assistantText);
+                    responseP.textContent = assistantText;
+                    updateStreamingMessage(assistantText);
                             } else {
                                 console.log('[Stream] Unknown or empty JSON object:', data);
                             }
@@ -1761,7 +1761,7 @@
                                 // Append to chat content (even if empty, to accumulate)
                                 if (data.text !== undefined && data.text !== null) {
                                     assistantText += data.text;
-                                    updateStreamingMessage(assistantText);
+                    updateStreamingMessage(assistantText);
                                 } else {
                                     console.warn('[Stream] Content message missing text field:', data);
                                 }

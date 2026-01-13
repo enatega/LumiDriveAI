@@ -415,8 +415,8 @@ async def calculate_distance_duration_google(
             raise ValueError(f"Invalid result from getDistanceMatrix: {result}")
     
     except Exception as e:
-            print(f"⚠️ Google Maps API error: {e}")
-            import traceback
-            traceback.print_exc()
-            raise ValueError(f"Google Maps API failed: {str(e)}")
+        print(f"⚠️ Google Maps API error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise ValueError(f"Google Maps API failed: {str(e)}")
 

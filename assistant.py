@@ -2526,7 +2526,7 @@ async def tool_create_ride_and_wait_for_bids(payment_via=None, is_scheduled=Fals
     # This allows the status message to be sent to the frontend before wait_for_bids blocks
     import asyncio
     await asyncio.sleep(0.5)  # Give enough time for the message to be yielded
-    
+
     # Wait for first bid to arrive - present it IMMEDIATELY when it arrives
     bids = wait_for_bids(rrid, timeout_seconds=60, poll_interval=2)
     
@@ -2863,7 +2863,7 @@ def tool_accept_bid_choice(choice_index: int = None, driver_name: str = None):
 
     # Send status message for bid acceptance
     send_status("Accepting the best offer...")
-    
+
     # Reuse low-level accept tool
     base = tool_accept_bid(bidId=bid_id, customer_id=customer_id)
     ok = base.get("status") in (200, 201, 202)

@@ -77,6 +77,51 @@ def get(path: str, params: dict | None = None, timeout: int = 25):
         print(resp.text[:1000])
     return resp
 
+
+def get_user_id_from_jwt(token: str, timeout: int = 10) -> dict:
+    """
+    Fetch user_id from JWT token using the rides backend API.
+
+    Args:
+        token: JWT bearer token (raw, without the Bearer prefix)
+        timeout: Request timeout in seconds
+
+    Returns:
+        {
+            "ok": bool,
+            "user_id": str | None,
+            "error": str | None
+        }
+    """
+    if not token:
+        return {"ok": False, "user_id": None, "error": "Missing token"}
+
+    url = f"{BASE_URL}/api/v1/users/get-user-id"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+
+    try:
+        resp = session.get(url, headers=headers, timeout=timeout)
+        if resp.status_code == 200:
+            data = resp.json()
+            user_id = data.get("user_id")
+            if user_id:
+                return {"ok": True, "user_id": user_id, "error": None}
+            return {"ok": False, "user_id": None, "error": "user_id not found in response"}
+
+        if resp.status_code == 401:
+            return {"ok": False, "user_id": None, "error": "Invalid or expired JWT token"}
+
+        return {
+            "ok": False,
+            "user_id": None,
+            "error": f"Failed to fetch user_id: HTTP {resp.status_code}",
+        }
+    except Exception as exc:
+        return {"ok": False, "user_id": None, "error": f"Error fetching user_id: {exc}"}
+
 def get_user_current_location(timeout: int = 10) -> dict:
     """
     Fetch user's current location from rides backend API.

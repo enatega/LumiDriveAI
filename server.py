@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from api import set_token
+from api import set_token, get_user_id_from_jwt
 from assistant import (
     SYSTEM,
     MODEL,
@@ -21,12 +21,14 @@ from memory_store import (
     get_memory,
     bootstrap_memory_from_messages,
     memory_to_openai_messages,
+    save_chat_to_database,
 )
 from speech import transcribe_audio, synthesize_speech
 from utils import strip_asterisks
 import json
 import os
 from dotenv import load_dotenv
+from database import init_database
 
 load_dotenv()
 
@@ -217,14 +219,28 @@ async def chat_endpoint(
         logger.info(f"[{request_id}] Auth Token Preview: {token_preview}")
     
     try:
-        _set_backend_token(authorization)
+        # Ensure database is ready
+        init_database()
+
+        token = _set_backend_token(authorization)
 
         if not body.session_id:
             logger.error(f"[{request_id}] ERROR: session_id is required")
             raise HTTPException(status_code=400, detail="session_id is required.")
 
-        memory = get_memory(body.session_id)
-        logger.info(f"[{request_id}] Memory retrieved for session: {body.session_id}")
+        # Resolve user_id from JWT
+        user_id_result = get_user_id_from_jwt(token)
+        if not user_id_result.get("ok"):
+            logger.error(f"[{request_id}] Failed to resolve user_id: {user_id_result.get('error')}")
+            raise HTTPException(
+                status_code=401 if "Invalid" in user_id_result.get("error", "") else 500,
+                detail=f"Failed to resolve user_id: {user_id_result.get('error')}",
+            )
+        user_id = user_id_result["user_id"]
+        logger.info(f"[{request_id}] Resolved user_id: {user_id}")
+
+        memory = get_memory(body.session_id, user_id)
+        logger.info(f"[{request_id}] Memory retrieved for session: {body.session_id} (user_id: {user_id})")
 
         # Fetch current location from backend API
         from api import get_user_current_location
@@ -258,6 +274,7 @@ async def chat_endpoint(
 
         logger.info(f"[{request_id}] Processing user message: {user_message[:100]}...")
         memory.chat_memory.add_user_message(user_message)
+        save_chat_to_database(body.session_id, "user", user_message)
 
         # Build system prompt with location context if available
         from memory_store import get_current_location
@@ -353,6 +370,7 @@ async def chat_endpoint(
 
         first_msg = first.choices[0].message
         had_tool_calls = bool(first_msg.tool_calls)
+        logger.info(f"[{request_id}] First message - tool_calls: {had_tool_calls}, content: {bool(first_msg.content)}, content_length: {len(first_msg.content) if first_msg.content else 0}")
         if had_tool_calls:
             logger.info(f"[{request_id}] Executing {len(first_msg.tool_calls)} tool calls...")
             for tc in first_msg.tool_calls:
@@ -457,80 +475,102 @@ async def chat_endpoint(
             print(f"[DEBUG] Status queue length after waiting: {len(status_queue)}")
             if status_queue:
                 print(f"[DEBUG] Remaining status queue contents: {[json.loads(msg.strip()).get('message', '') for msg in status_queue]}")
-            
-            try:
-                logger.info(f"[{request_id}] Calling OpenAI API (streaming response)...")
-                # If there were tool calls, _run_tools_for_message already added the assistant message
-                # with tool_calls and tool responses to messages. Only add assistant message if there
-                # were no tool calls.
-                if had_tool_calls:
-                    stream_messages = messages
-                else:
-                    # No tool calls, so add the assistant message with its content
-                    stream_messages = messages + [{"role": "assistant", "content": first_msg.content or ""}]
-                stream = client.chat.completions.create(
-                    model=MODEL,
-                    messages=stream_messages,
-                    stream=True,
-                )
-                logger.info(f"[{request_id}] OpenAI streaming started")
-            except Exception as exc:
-                logger.error(f"[{request_id}] ERROR: Failed to stream OpenAI response: {exc}")
-                set_status_callback(None)  # Clear callback on error
-                raise HTTPException(status_code=502, detail=f"Failed to stream OpenAI response: {exc}") from exc
-            
-            # Then stream the normal content
+
+            # Handle response based on whether there were tool calls
             final_chunks: List[str] = []
             chunk_count = 0
             
-            try:
-                for chunk in stream:
-                    delta = chunk.choices[0].delta
-                    if delta.content:
-                        # Strip asterisks from each chunk as it's streamed
-                        cleaned_content = strip_asterisks(delta.content)
-                        final_chunks.append(cleaned_content)
-                        chunk_count += 1
-                        # Only yield content if it's not empty
-                        if cleaned_content:
-                            # Yield as content type JSON
-                            yield json.dumps({"type": "content", "text": cleaned_content}) + "\n"
-                    
-                    # Check for new status messages while streaming (interleave them)
-                    while status_queue:
-                        status_msg = status_queue.pop(0)
-                        try:
-                            msg_data = json.loads(status_msg.strip())
-                            msg_text = msg_data.get('message', '')
-                            if msg_text and msg_text not in seen_messages:
-                                seen_messages.add(msg_text)
-                                logger.info(f"[{request_id}] Yielding status message during stream: {msg_text}")
-                                print(f"[DEBUG] Yielding status message during stream: {msg_text}")
-                                yield status_msg
-                            else:
-                                print(f"[DEBUG] Status message already sent during stream, skipping: {msg_text}")
-                        except json.JSONDecodeError:
-                            yield status_msg
-            finally:
-                # Clear status callback
-                set_status_callback(None)
-                
-                final_text = "".join(final_chunks).strip()
-                # Strip asterisks from final text before saving to memory
-                final_text = strip_asterisks(final_text)
-                elapsed_time = time.time() - start_time
-                if final_text:
-                    memory.chat_memory.add_ai_message(final_text)
-                    logger.info(f"[{request_id}] ========== POST /chat RESPONSE ==========")
-                    logger.info(f"[{request_id}] Status: 200 OK")
-                    logger.info(f"[{request_id}] Response Length: {len(final_text)} characters")
-                    logger.info(f"[{request_id}] Response Preview: {final_text[:200]}...")
-                    logger.info(f"[{request_id}] Chunks Streamed: {chunk_count}")
-                    logger.info(f"[{request_id}] Total Time: {elapsed_time:.2f}s")
-                    logger.info(f"[{request_id}] ==========================================")
+            if not had_tool_calls and first_msg.content:
+                # No tool calls - use the content directly from first response
+                logger.info(f"[{request_id}] No tool calls, using direct response content (length: {len(first_msg.content)})")
+                content = first_msg.content
+                cleaned_content = strip_asterisks(content)
+                if cleaned_content:
+                    final_chunks.append(cleaned_content)
+                    chunk_count = 1
+                    # Yield the content
+                    yield json.dumps({"type": "content", "text": cleaned_content}) + "\n"
                 else:
-                    logger.warning(f"[{request_id}] WARNING: Empty response streamed")
-        
+                    logger.warning(f"[{request_id}] Content was empty after stripping asterisks")
+            elif not had_tool_calls:
+                logger.warning(f"[{request_id}] No tool calls but first_msg.content is empty or None")
+            else:
+                # Tool calls were made - stream the final response
+                try:
+                    logger.info(f"[{request_id}] Calling OpenAI API (streaming response)...")
+                    # If there were tool calls, _run_tools_for_message already added the assistant message
+                    # with tool_calls and tool responses to messages. Only add assistant message if there
+                    # were no tool calls.
+                    if had_tool_calls:
+                        stream_messages = messages
+                    else:
+                        # No tool calls, so add the assistant message with its content
+                        stream_messages = messages + [{"role": "assistant", "content": first_msg.content or ""}]
+                    stream = client.chat.completions.create(
+                        model=MODEL,
+                        messages=stream_messages,
+                        stream=True,
+                    )
+                    logger.info(f"[{request_id}] OpenAI streaming started")
+                except Exception as exc:
+                    logger.error(f"[{request_id}] ERROR: Failed to stream OpenAI response: {exc}")
+                    set_status_callback(None)  # Clear callback on error
+                    raise HTTPException(status_code=502, detail=f"Failed to stream OpenAI response: {exc}") from exc
+
+                # Stream the normal content
+                try:
+                    for chunk in stream:
+                        delta = chunk.choices[0].delta
+                        if delta.content:
+                            # Strip asterisks from each chunk as it's streamed
+                            cleaned_content = strip_asterisks(delta.content)
+                            final_chunks.append(cleaned_content)
+                            chunk_count += 1
+                            # Only yield content if it's not empty
+                            if cleaned_content:
+                                # Yield as content type JSON
+                                yield json.dumps({"type": "content", "text": cleaned_content}) + "\n"
+                        
+                        # Check for new status messages while streaming (interleave them)
+                        while status_queue:
+                            status_msg = status_queue.pop(0)
+                            try:
+                                msg_data = json.loads(status_msg.strip())
+                                msg_text = msg_data.get('message', '')
+                                if msg_text and msg_text not in seen_messages:
+                                    seen_messages.add(msg_text)
+                                    logger.info(f"[{request_id}] Yielding status message during stream: {msg_text}")
+                                    print(f"[DEBUG] Yielding status message during stream: {msg_text}")
+                                    yield status_msg
+                                else:
+                                    print(f"[DEBUG] Status message already sent during stream, skipping: {msg_text}")
+                            except json.JSONDecodeError:
+                                yield status_msg
+                except Exception as exc:
+                    logger.error(f"[{request_id}] Error during streaming: {exc}")
+                    # Continue to finally block to save what we have
+            
+            # Finally block - save response to memory and database
+            # Clear status callback
+            set_status_callback(None)
+            
+            final_text = "".join(final_chunks).strip()
+            # Strip asterisks from final text before saving to memory
+            final_text = strip_asterisks(final_text)
+            elapsed_time = time.time() - start_time
+            if final_text:
+                memory.chat_memory.add_ai_message(final_text)
+                save_chat_to_database(body.session_id, "assistant", final_text)
+                logger.info(f"[{request_id}] ========== POST /chat RESPONSE ==========")
+                logger.info(f"[{request_id}] Status: 200 OK")
+                logger.info(f"[{request_id}] Response Length: {len(final_text)} characters")
+                logger.info(f"[{request_id}] Response Preview: {final_text[:200]}...")
+                logger.info(f"[{request_id}] Chunks Streamed: {chunk_count}")
+                logger.info(f"[{request_id}] Total Time: {elapsed_time:.2f}s")
+                logger.info(f"[{request_id}] ==========================================")
+            else:
+                logger.warning(f"[{request_id}] WARNING: Empty response streamed (chunks: {chunk_count}, had_tool_calls: {had_tool_calls}, first_msg_content: {bool(first_msg.content if 'first_msg' in locals() else False)})")
+
         return StreamingResponse(async_token_stream(), media_type="text/plain")
     
     except HTTPException as e:
