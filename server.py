@@ -22,6 +22,12 @@ from memory_store import (
 )
 from speech import transcribe_audio, synthesize_speech
 from utils import strip_asterisks
+from guardrails import (
+    apply_guardrails,
+    filter_streaming_chunk,
+    is_query_in_scope,
+    get_out_of_scope_response,
+)
 import json
 import os
 from dotenv import load_dotenv
@@ -251,6 +257,19 @@ async def chat_endpoint(
             logger.error(f"[{request_id}] ERROR: user_message is required")
             raise HTTPException(status_code=400, detail="user_message is required.")
 
+        # Guardrail: Check if query is in scope
+        is_in_scope, reason = is_query_in_scope(user_message)
+        if not is_in_scope:
+            logger.info(f"[{request_id}] Query out of scope: {reason}")
+            out_of_scope_response = get_out_of_scope_response(user_message)
+            memory.chat_memory.add_user_message(user_message)
+            memory.chat_memory.add_ai_message(out_of_scope_response)
+            
+            def out_of_scope_stream():
+                yield out_of_scope_response
+            
+            return StreamingResponse(out_of_scope_stream(), media_type="text/plain")
+
         logger.info(f"[{request_id}] Processing user message: {user_message[:100]}...")
         memory.chat_memory.add_user_message(user_message)
 
@@ -356,19 +375,30 @@ async def chat_endpoint(
         def token_stream():
             final_chunks: List[str] = []
             chunk_count = 0
+            accumulated_text = ""
             try:
                 for chunk in stream:
                     delta = chunk.choices[0].delta
                     if delta.content:
                         # Strip asterisks from each chunk as it's streamed
                         cleaned_content = strip_asterisks(delta.content)
-                        final_chunks.append(cleaned_content)
+                        # Apply guardrails to filter tool details from streaming chunks
+                        filtered_chunk = filter_streaming_chunk(cleaned_content, accumulated_text)
+                        accumulated_text += filtered_chunk
+                        final_chunks.append(filtered_chunk)
                         chunk_count += 1
-                        yield cleaned_content
+                        yield filtered_chunk
             finally:
                 final_text = "".join(final_chunks).strip()
                 # Strip asterisks from final text before saving to memory
                 final_text = strip_asterisks(final_text)
+                # Apply guardrails to final response
+                final_text, should_block = apply_guardrails(final_text, user_message, check_scope=False)
+                
+                if should_block:
+                    logger.warning(f"[{request_id}] Response blocked by guardrails")
+                    final_text = get_out_of_scope_response(user_message)
+                
                 elapsed_time = time.time() - start_time
                 if final_text:
                     memory.chat_memory.add_ai_message(final_text)
