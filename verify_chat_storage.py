@@ -65,19 +65,26 @@ def check_tables_exist(conn):
             SELECT table_name 
             FROM information_schema.tables 
             WHERE table_schema = 'public' 
-            AND table_name IN ('assistant_chat_sessions', 'assistant_chat_messages')
+            AND table_name IN ('assistant_chat_sessions', 'assistant_chat_messages', 'assistant_chat_summaries')
             ORDER BY table_name;
         """)
         tables = [row[0] for row in cur.fetchall()]
         
-        if len(tables) != 2:
-            print("❌ Missing tables!")
-            print(f"   Expected: assistant_chat_sessions, assistant_chat_messages")
-            print(f"   Found: {', '.join(tables) if tables else 'none'}")
-            return False
+        expected_tables = ['assistant_chat_sessions', 'assistant_chat_messages', 'assistant_chat_summaries']
+        missing = [t for t in expected_tables if t not in tables]
         
-        print("✅ Tables exist: assistant_chat_sessions, assistant_chat_messages")
-        return True
+        if missing:
+            print(f"⚠️  Missing tables: {', '.join(missing)}")
+            print(f"   Found: {', '.join(tables) if tables else 'none'}")
+            if 'assistant_chat_summaries' in missing:
+                print("   Note: assistant_chat_summaries is from Phase 4 - may not exist yet")
+        
+        if len(tables) >= 2:
+            print(f"✅ Tables exist: {', '.join(tables)}")
+            return True
+        else:
+            print("❌ Missing core tables!")
+            return False
 
 
 def get_statistics(conn):
@@ -110,7 +117,25 @@ def get_statistics(conn):
         """)
         message_stats = cur.fetchone()
         
-        return dict(session_stats), dict(message_stats)
+        # Summary stats (Phase 4) - check if table exists first
+        summary_stats = {}
+        try:
+            cur.execute("""
+                SELECT 
+                    COUNT(*) as total_summaries,
+                    COUNT(DISTINCT session_id) as sessions_with_summaries,
+                    COUNT(DISTINCT user_id) as users_with_summaries,
+                    SUM(message_count) as total_messages_summarized,
+                    MIN(created_at) as oldest_summary,
+                    MAX(created_at) as newest_summary
+                FROM assistant_chat_summaries
+            """)
+            summary_stats = dict(cur.fetchone())
+        except Exception:
+            # Table doesn't exist yet
+            summary_stats = None
+        
+        return dict(session_stats), dict(message_stats), summary_stats
 
 
 def verify_data_integrity(conn):
@@ -250,6 +275,75 @@ def show_session_messages(conn, session_id, limit=20):
             print(f"   Time: {msg['created_at']}")
 
 
+def show_summaries(conn, session_id=None, user_id=None, limit=10):
+    """Show summaries for a session or user"""
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        if session_id:
+            cur.execute("""
+                SELECT 
+                    id,
+                    session_id,
+                    summary_text,
+                    message_count,
+                    start_message_id,
+                    end_message_id,
+                    created_at
+                FROM assistant_chat_summaries
+                WHERE session_id = %s
+                ORDER BY created_at ASC
+            """, (session_id,))
+            title = f"Summaries for Session: {session_id[:50]}..."
+        elif user_id:
+            cur.execute("""
+                SELECT 
+                    id,
+                    session_id,
+                    summary_text,
+                    message_count,
+                    start_message_id,
+                    end_message_id,
+                    created_at
+                FROM assistant_chat_summaries
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (user_id, limit))
+            title = f"Summaries for User: {user_id}"
+        else:
+            cur.execute("""
+                SELECT 
+                    id,
+                    session_id,
+                    summary_text,
+                    message_count,
+                    start_message_id,
+                    end_message_id,
+                    created_at
+                FROM assistant_chat_summaries
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (limit,))
+            title = f"Recent Summaries (last {limit})"
+        
+        summaries = cur.fetchall()
+        
+        if not summaries:
+            print(f"ℹ️  No summaries found")
+            return
+        
+        print(f"\n📝 {title}")
+        print("=" * 100)
+        for i, summary in enumerate(summaries, 1):
+            print(f"\n{i}. Summary ID: {summary['id']}")
+            print(f"   Session: {summary['session_id'][:50]}...")
+            print(f"   Messages Covered: {summary['message_count']} (IDs: {summary['start_message_id']} - {summary['end_message_id']})")
+            print(f"   Created: {summary['created_at']}")
+            summary_text = summary['summary_text']
+            if len(summary_text) > 200:
+                summary_text = summary_text[:200] + "..."
+            print(f"   Summary: {summary_text}")
+
+
 def show_user_sessions(conn, user_id, limit=10, show_messages=True):
     """Show sessions for a specific user"""
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -322,6 +416,7 @@ def main():
     parser = argparse.ArgumentParser(description="Verify chat storage in database")
     parser.add_argument("--user-id", help="Filter by user ID")
     parser.add_argument("--session-id", help="Show messages for specific session")
+    parser.add_argument("--summaries", action="store_true", help="Show summaries")
     parser.add_argument("--limit", type=int, default=10, help="Limit results (default: 10)")
     args = parser.parse_args()
     
@@ -340,7 +435,7 @@ def main():
         # Get statistics
         print("\n📊 Statistics:")
         print("-" * 100)
-        session_stats, message_stats = get_statistics(conn)
+        session_stats, message_stats, summary_stats = get_statistics(conn)
         
         print(f"\nSessions:")
         print(f"  Total Sessions: {session_stats['total_sessions']}")
@@ -362,16 +457,43 @@ def main():
         if message_stats['newest_message']:
             print(f"  Newest Message: {message_stats['newest_message']}")
         
+        # Summary stats (Phase 4)
+        if summary_stats:
+            print(f"\nSummaries (Phase 4):")
+            print(f"  Total Summaries: {summary_stats['total_summaries']}")
+            print(f"  Sessions with Summaries: {summary_stats['sessions_with_summaries']}")
+            print(f"  Users with Summaries: {summary_stats['users_with_summaries']}")
+            print(f"  Total Messages Summarized: {summary_stats['total_messages_summarized']}")
+            if summary_stats['oldest_summary']:
+                print(f"  Oldest Summary: {summary_stats['oldest_summary']}")
+            if summary_stats['newest_summary']:
+                print(f"  Newest Summary: {summary_stats['newest_summary']}")
+        else:
+            print(f"\nSummaries (Phase 4):")
+            print(f"  ⚠️  assistant_chat_summaries table not found (Phase 4 may not be initialized)")
+        
         # Verify data integrity
         print("\n🔒 Data Integrity Check:")
         print("-" * 100)
         verify_data_integrity(conn)
         
         # Show specific data
-        if args.session_id:
+        if args.summaries:
+            show_summaries(conn, session_id=args.session_id, user_id=args.user_id, limit=args.limit)
+        elif args.session_id:
             show_session_messages(conn, args.session_id, args.limit)
+            # Also show summaries for this session if available
+            try:
+                show_summaries(conn, session_id=args.session_id)
+            except Exception:
+                pass
         elif args.user_id:
             show_user_sessions(conn, args.user_id, args.limit, show_messages=True)
+            # Also show summaries for this user if available
+            try:
+                show_summaries(conn, user_id=args.user_id, limit=args.limit)
+            except Exception:
+                pass
         else:
             show_recent_sessions(conn, args.limit)
         

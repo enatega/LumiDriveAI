@@ -89,7 +89,7 @@ def _last_user_message(messages: List[ChatMessage]) -> Optional[str]:
     return None
 
 
-async def _run_tools_for_message(msg, messages: List[Dict[str, Any]], user_location: Optional[Dict[str, float]] = None) -> None:
+async def _run_tools_for_message(msg, messages: List[Dict[str, Any]], user_location: Optional[Dict[str, float]] = None, session_id: Optional[str] = None) -> None:
     """
     Execute any tool calls in msg and append their outputs to messages.
     This mirrors the logic in assistant.chat_loop but without CLI I/O.
@@ -184,12 +184,27 @@ async def _run_tools_for_message(msg, messages: List[Dict[str, Any]], user_locat
         except Exception as exc:
             result = {"ok": False, "error": f"tool_{tc.function.name} crashed", "details": str(exc)}
 
-        messages.append({
+        tool_message = {
             "role": "tool",
             "tool_call_id": tc.id,
             "name": tc.function.name,
             "content": json.dumps(result),
-        })
+        }
+        messages.append(tool_message)
+        
+        # Save tool result to database and extract preferences (Phase 5)
+        if session_id:
+            try:
+                from memory_store import save_chat_to_database
+                save_chat_to_database(
+                    session_id=session_id,
+                    role="tool",
+                    content=json.dumps(result),
+                    tool_call_id=tc.id,
+                    tool_name=tc.function.name,
+                )
+            except Exception as e:
+                logger.error(f"Failed to save tool result: {e}")
 
 
 @app.post("/chat")
@@ -276,10 +291,18 @@ async def chat_endpoint(
         memory.chat_memory.add_user_message(user_message)
         save_chat_to_database(body.session_id, "user", user_message)
 
-        # Build system prompt with location context if available
+        # Build system prompt with intelligent recommendations and location context
         from memory_store import get_current_location
+        from recommendation_service import build_user_recommendation_context
         
         system_prompt = SYSTEM
+        
+        # Phase 6: Inject intelligent user context (preferences, patterns, summaries)
+        recommendation_context = build_user_recommendation_context(user_id)
+        if recommendation_context:
+            system_prompt += recommendation_context
+            logger.info(f"[{request_id}] Injected recommendation context for user {user_id}")
+        
         current_location = get_current_location(body.session_id)
         # Only add location context if it's valid (exists, has lat and lng)
         if current_location and isinstance(current_location, dict) and current_location.get("lat") and current_location.get("lng"):
@@ -395,7 +418,7 @@ async def chat_endpoint(
                 """Run tools in background"""
                 nonlocal tool_execution_done, tool_execution_error
                 try:
-                    await _run_tools_for_message(first_msg, messages)
+                    await _run_tools_for_message(first_msg, messages, session_id=body.session_id)
                     tool_execution_done = True
                 except Exception as e:
                     tool_execution_error = e
@@ -496,8 +519,8 @@ async def chat_endpoint(
                 logger.warning(f"[{request_id}] No tool calls but first_msg.content is empty or None")
             else:
                 # Tool calls were made - stream the final response
-                try:
-                    logger.info(f"[{request_id}] Calling OpenAI API (streaming response)...")
+        try:
+            logger.info(f"[{request_id}] Calling OpenAI API (streaming response)...")
                     # If there were tool calls, _run_tools_for_message already added the assistant message
                     # with tool_calls and tool responses to messages. Only add assistant message if there
                     # were no tool calls.
@@ -506,26 +529,26 @@ async def chat_endpoint(
                     else:
                         # No tool calls, so add the assistant message with its content
                         stream_messages = messages + [{"role": "assistant", "content": first_msg.content or ""}]
-                    stream = client.chat.completions.create(
-                        model=MODEL,
+            stream = client.chat.completions.create(
+                model=MODEL,
                         messages=stream_messages,
-                        stream=True,
-                    )
-                    logger.info(f"[{request_id}] OpenAI streaming started")
-                except Exception as exc:
-                    logger.error(f"[{request_id}] ERROR: Failed to stream OpenAI response: {exc}")
+                stream=True,
+            )
+            logger.info(f"[{request_id}] OpenAI streaming started")
+        except Exception as exc:
+            logger.error(f"[{request_id}] ERROR: Failed to stream OpenAI response: {exc}")
                     set_status_callback(None)  # Clear callback on error
-                    raise HTTPException(status_code=502, detail=f"Failed to stream OpenAI response: {exc}") from exc
+            raise HTTPException(status_code=502, detail=f"Failed to stream OpenAI response: {exc}") from exc
 
                 # Stream the normal content
-                try:
-                    for chunk in stream:
-                        delta = chunk.choices[0].delta
-                        if delta.content:
+            try:
+                for chunk in stream:
+                    delta = chunk.choices[0].delta
+                    if delta.content:
                             # Strip asterisks from each chunk as it's streamed
                             cleaned_content = strip_asterisks(delta.content)
                             final_chunks.append(cleaned_content)
-                            chunk_count += 1
+                        chunk_count += 1
                             # Only yield content if it's not empty
                             if cleaned_content:
                                 # Yield as content type JSON
@@ -554,21 +577,32 @@ async def chat_endpoint(
             # Clear status callback
             set_status_callback(None)
             
-            final_text = "".join(final_chunks).strip()
+                final_text = "".join(final_chunks).strip()
             # Strip asterisks from final text before saving to memory
             final_text = strip_asterisks(final_text)
-            elapsed_time = time.time() - start_time
-            if final_text:
-                memory.chat_memory.add_ai_message(final_text)
+                elapsed_time = time.time() - start_time
+                if final_text:
+                    memory.chat_memory.add_ai_message(final_text)
                 save_chat_to_database(body.session_id, "assistant", final_text)
-                logger.info(f"[{request_id}] ========== POST /chat RESPONSE ==========")
-                logger.info(f"[{request_id}] Status: 200 OK")
-                logger.info(f"[{request_id}] Response Length: {len(final_text)} characters")
-                logger.info(f"[{request_id}] Response Preview: {final_text[:200]}...")
-                logger.info(f"[{request_id}] Chunks Streamed: {chunk_count}")
-                logger.info(f"[{request_id}] Total Time: {elapsed_time:.2f}s")
-                logger.info(f"[{request_id}] ==========================================")
-            else:
+                
+                # Generate summary if needed (Phase 4: Chat Summary Generation)
+                if user_id:
+                    try:
+                        from summary_service import generate_summary_if_needed
+                        summary_id = generate_summary_if_needed(body.session_id, user_id)
+                        if summary_id:
+                            logger.info(f"[{request_id}] Generated summary {summary_id} for session {body.session_id[:20]}...")
+                    except Exception as e:
+                        logger.error(f"[{request_id}] Failed to generate summary: {e}")
+                
+                    logger.info(f"[{request_id}] ========== POST /chat RESPONSE ==========")
+                    logger.info(f"[{request_id}] Status: 200 OK")
+                    logger.info(f"[{request_id}] Response Length: {len(final_text)} characters")
+                    logger.info(f"[{request_id}] Response Preview: {final_text[:200]}...")
+                    logger.info(f"[{request_id}] Chunks Streamed: {chunk_count}")
+                    logger.info(f"[{request_id}] Total Time: {elapsed_time:.2f}s")
+                    logger.info(f"[{request_id}] ==========================================")
+                else:
                 logger.warning(f"[{request_id}] WARNING: Empty response streamed (chunks: {chunk_count}, had_tool_calls: {had_tool_calls}, first_msg_content: {bool(first_msg.content if 'first_msg' in locals() else False)})")
 
         return StreamingResponse(async_token_stream(), media_type="text/plain")

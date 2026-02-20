@@ -124,12 +124,37 @@ def save_chat_to_database(
 ):
     """
     Persist a chat message to the database, if a user_id mapping is available.
+    Also extracts user preferences from the message (Phase 5).
     """
     user_id = _USER_IDS.get(session_id)
     if not user_id:
         return
     try:
         save_message(session_id, user_id, role, content, tool_call_id, tool_name)
+        
+        # Phase 5: Extract preferences from messages
+        try:
+            from preference_extraction import extract_preferences_from_message
+            import json
+            
+            # If this is a tool result, parse it and extract preferences
+            tool_result = None
+            if role == "tool" and tool_name and content:
+                try:
+                    tool_result = json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            
+            # Extract preferences from message
+            extract_preferences_from_message(
+                user_id=user_id,
+                role=role,
+                content=content,
+                tool_name=tool_name,
+                tool_result=tool_result,
+            )
+        except Exception as exc:
+            logger.error(f"Failed to extract preferences for session {session_id}: {exc}")
     except Exception as exc:
         logger.error(f"Failed to save message for session {session_id}: {exc}")
 

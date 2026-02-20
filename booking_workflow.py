@@ -134,18 +134,18 @@ async def resolve_locations(state: BookingState) -> BookingState:
             }
         else:
             # Try to resolve as place name
-        try:
-            result = await tool_resolve_place_to_coordinates(pickup_place)
-            if result.get("ok"):
-                pickup_coords = {
-                    "lat": result["lat"],
-                    "lng": result["lng"],
-                    "address": result["address"],
-                }
-            else:
-                error = f"Could not resolve pickup location: {result.get('error')}"
-        except Exception as e:
-            error = f"Error resolving pickup: {str(e)}"
+            try:
+                result = await tool_resolve_place_to_coordinates(pickup_place)
+                if result.get("ok"):
+                    pickup_coords = {
+                        "lat": result["lat"],
+                        "lng": result["lng"],
+                        "address": result["address"],
+                    }
+                else:
+                    error = f"Could not resolve pickup location: {result.get('error')}"
+            except Exception as e:
+                error = f"Error resolving pickup: {str(e)}"
     
     if dropoff_place and not error:
         # Check if dropoff_place is already coordinates

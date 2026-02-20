@@ -105,6 +105,46 @@ def _ensure_schema():
     CREATE INDEX IF NOT EXISTS idx_assistant_chat_messages_session_id ON assistant_chat_messages(session_id);
     CREATE INDEX IF NOT EXISTS idx_assistant_chat_messages_user_id ON assistant_chat_messages(user_id);
     CREATE INDEX IF NOT EXISTS idx_assistant_chat_messages_created_at ON assistant_chat_messages(created_at DESC);
+
+    -- Assistant chat summaries table (Phase 4: Chat Summary Generation)
+    CREATE TABLE IF NOT EXISTS assistant_chat_summaries (
+        id BIGSERIAL PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        user_id UUID NOT NULL,
+        summary_text TEXT NOT NULL,
+        message_count INTEGER NOT NULL,
+        start_message_id BIGINT,
+        end_message_id BIGINT,
+        created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES assistant_chat_sessions(session_id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (start_message_id) REFERENCES assistant_chat_messages(id) ON DELETE SET NULL,
+        FOREIGN KEY (end_message_id) REFERENCES assistant_chat_messages(id) ON DELETE SET NULL
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_assistant_chat_summaries_session_id ON assistant_chat_summaries(session_id);
+    CREATE INDEX IF NOT EXISTS idx_assistant_chat_summaries_user_id ON assistant_chat_summaries(user_id);
+    CREATE INDEX IF NOT EXISTS idx_assistant_chat_summaries_created_at ON assistant_chat_summaries(created_at DESC);
+
+    -- Assistant user preferences table (Phase 5: User Preference Extraction)
+    CREATE TABLE IF NOT EXISTS assistant_user_preferences (
+        id BIGSERIAL PRIMARY KEY,
+        user_id UUID NOT NULL,
+        preference_type TEXT NOT NULL CHECK(preference_type IN ('most_visited_place', 'preferred_ride_type', 'common_pickup', 'common_dropoff', 'preferred_time', 'preferred_payment', 'common_stop', 'other')),
+        preference_key TEXT NOT NULL,
+        preference_value TEXT NOT NULL,
+        frequency INTEGER DEFAULT 1 NOT NULL,
+        last_used_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(user_id, preference_type, preference_key)
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_assistant_user_preferences_user_id ON assistant_user_preferences(user_id);
+    CREATE INDEX IF NOT EXISTS idx_assistant_user_preferences_type ON assistant_user_preferences(preference_type);
+    CREATE INDEX IF NOT EXISTS idx_assistant_user_preferences_frequency ON assistant_user_preferences(frequency DESC);
+    CREATE INDEX IF NOT EXISTS idx_assistant_user_preferences_last_used ON assistant_user_preferences(last_used_at DESC);
     """
 
     with get_cursor(commit=True) as cur:
